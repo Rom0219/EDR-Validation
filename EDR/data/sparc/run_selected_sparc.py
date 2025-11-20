@@ -1,58 +1,70 @@
-#!/usr/bin/env python3
-# run_selected_sparc.py
-# Ejecuta la validación en las 10 galaxias seleccionadas.
-
 import os
-import glob
-import pandas as pd
-
 from sparc_fit import (
     load_rotmod_generic,
-    fit_galaxy,
-    bootstrap_errors,
-    plot_fit
+    fit_edr_rotation_curve,
+    plot_fit,
+    save_fit_result
 )
 
-GALAXIES = [
-    "NGC3198","NGC2403","NGC2841","NGC6503","NGC3521",
-    "DDO154","NGC3741","IC2574","NGC3109","NGC2976"
-]
-
+# -------------------------------------------------------
+# CONFIG
+# -------------------------------------------------------
 DATA_DIR = os.path.dirname(__file__)
-RESULTS_DIR = "results"
-PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
+OUT_DIR = os.path.join(DATA_DIR, "results")
+PLOTS_DIR = os.path.join(OUT_DIR, "plots")
+CSV_PATH = os.path.join(OUT_DIR, "sparc_results.csv")
 
-os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
-def find_file(gal):
-    pattern = os.path.join(DATA_DIR, f"*{gal}*")
-    matches = glob.glob(pattern)
-    matches = [m for m in matches if m.endswith((".dat",".txt",".csv"))]
-    return matches[0] if matches else None
+# Galaxias SPARC estándar + las tuyas
+GALAXIES = [
+    "NGC3198", "NGC2403", "NGC2841", "NGC6503", "NGC3521",
+    "DDO154", "NGC3741", "IC2574", "NGC3109", "NGC2976"
+]
 
-results = []
+# -------------------------------------------------------
+# MAIN LOOP
+# -------------------------------------------------------
+print("=============================================")
+print("   PROCESO SPARC + EDR — VALIDACIÓN MASIVA")
+print("=============================================")
 
 for g in GALAXIES:
-    f = find_file(g)
-    if f is None:
+
+    fname = f"{g}_rotmod.dat"
+    fpath = os.path.join(DATA_DIR, fname)
+
+    if not os.path.isfile(fpath):
         print(f"[NO FILE] {g}")
         continue
 
-    print(f"[OK] Leyendo {f}")
-    data = load_rotmod_generic(f)
-    fitres = fit_galaxy(data)
-    err = bootstrap_errors(data, fitres)
+    print(f"\n[OK] Leyendo {fpath}")
 
-    fitres["galaxy"] = g
-    fitres.update(err)
-    results.append(fitres)
+    try:
+        data = load_rotmod_generic(fpath)
+    except Exception as e:
+        print(f"[ERROR] Fallo leyendo {g}: {e}")
+        continue
 
-    plot_fit(data, fitres, fname=os.path.join(PLOTS_DIR, f"{g}.png"))
+    # Ajuste EDR
+    fitres = fit_edr_rotation_curve(
+        data["R"], data["Vobs"], data["eV"]
+    )
 
-df = pd.DataFrame(results)
-df.to_csv(os.path.join(RESULTS_DIR, "sparc_results.csv"), index=False)
+    if fitres is None:
+        print(f"[ERROR] No se pudo ajustar {g}")
+        continue
+
+    # Guardar CSV
+    save_fit_result(fitres, g, CSV_PATH)
+
+    # Graficar
+    plot_path = os.path.join(PLOTS_DIR, f"{g}.png")
+    plot_fit(data, fitres, plot_path)
+
+    print(f"[OK] Ajuste completo para {g}")
+    print(f"     → Plot: {plot_path}")
 
 print("\n>>> PROCESO COMPLETADO <<<")
-print("Resultados en: results/sparc_results.csv")
-print("Plots en: results/plots/")
+print(f"Resultados en: {CSV_PATH}")
+print(f"Plots en: {PLOTS_DIR}")
