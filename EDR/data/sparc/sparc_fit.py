@@ -10,50 +10,62 @@ from scipy.optimize import curve_fit
 # -------------------------------------------------------------
 # 1. MODELO EDR PARA CURVAS DE ROTACIÓN
 # -------------------------------------------------------------
-def v_edr_model(r, A, R0):
-    """
-    Modelo básico de la EDR:
-       v(r) = sqrt( A * r / (1 + (r/R0)) )
-    """
-    r = np.asarray(r)
-    return np.sqrt( A * r / (1.0 + (r / R0)) )
-
-# -------------------------------------------------------------
-# 2. CARGA ROBUSTA DE ARCHIVOS rotmod / SPARC
-# -------------------------------------------------------------
 def load_rotmod_generic(path):
     """
-    Intenta leer archivos rotmod/SPARC con columnas desconocidas.
-    Devuelve: r, v_obs, v_err, v_bary
+    Lector robusto para archivos SPARC.
+    Detecta automáticamente las columnas:
+    Rad, Vobs, errV, Vgas, Vdisk, Vbul
     """
+
+    # -------------------------------------------------------------
+    # 1. Carga flexible
+    # -------------------------------------------------------------
     try:
-        df = pd.read_csv(path, comment='#', sep=None, engine='python')
+        df = pd.read_csv(path, comment='#', delim_whitespace=True)
     except Exception:
         df = pd.read_table(path, comment='#', sep=r"\s+", engine='python')
 
-    def pick(colnames):
-        for key in colnames:
-            for c in df.columns:
-                if key in str(c).lower():
-                    return c
+    # Convertir nombres a minúsculas
+    cols = {c.lower(): c for c in df.columns}
+
+    # -------------------------------------------------------------
+    # 2. Detectar columnas reales SPARC
+    # -------------------------------------------------------------
+    def pick(*keys):
+        """Devuelve la primera coincidencia presente en df."""
+        for k in keys:
+            for col in cols:
+                if k in col:
+                    return cols[col]
         return None
 
-    r_col = pick(["r", "rad", "radius"])
-    v_col = pick(["vobs", "v_obs", "vrot", "v"])
-    e_col = pick(["e_v", "err", "error", "sigma"])
-    d_col = pick(["vdisk", "disk"])
-    g_col = pick(["vgas", "gas"])
-    b_col = pick(["vbulge", "bulge"])
+    r_col    = pick("rad", "r", "radius")
+    v_col    = pick("vobs", "vrot", "v")
+    e_col    = pick("err", "errv", "ev", "error", "sigma")
+    gas_col  = pick("vgas", "gas")
+    disk_col = pick("vdisk", "disk")
+    bul_col  = pick("vbul", "bul")
 
-    r = df[r_col].values.astype(float)
-    v_obs = df[v_col].values.astype(float)
-    v_err = df[e_col].values.astype(float) if e_col else np.ones_like(v_obs)*5.0
+    # -------------------------------------------------------------
+    # 3. Validación mínima
+    # -------------------------------------------------------------
+    if r_col is None or v_col is None:
+        print(f"ERROR: No se detectaron columnas válidas en {path}")
+        print("Columnas detectadas:", df.columns)
+        raise KeyError("Formato SPARC desconocido")
 
-    vdisk = df[d_col].values.astype(float) if d_col else np.zeros_like(v_obs)
-    vgas = df[g_col].values.astype(float) if g_col else np.zeros_like(v_obs)
-    vbulge = df[b_col].values.astype(float) if b_col else np.zeros_like(v_obs)
+    # -------------------------------------------------------------
+    # 4. Construcción del dataset interno
+    # -------------------------------------------------------------
+    r      = df[r_col].values.astype(float)
+    v_obs  = df[v_col].values.astype(float)
+    v_err  = df[e_col].values.astype(float) if e_col  else np.ones_like(v_obs)*5
+    v_gas  = df[gas_col].values.astype(float) if gas_col  else np.zeros_like(v_obs)
+    v_disk = df[disk_col].values.astype(float) if disk_col else np.zeros_like(v_obs)
+    v_bul  = df[bul_col].values.astype(float) if bul_col  else np.zeros_like(v_obs)
 
-    v_bary = np.sqrt(vdisk**2 + vgas**2 + vbulge**2)
+    # Baryonic rotation curve:
+    v_bary = np.sqrt(v_gas**2 + v_disk**2 + v_bul**2)
 
     return {
         "r": r,
