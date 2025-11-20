@@ -189,4 +189,31 @@ def plot_fit(data, fitres, fname=None):
 # MAIN
 # ---------------------
 if __name__ == "__main__":
-    run_all_sparc(glob_pattern="*.csv")
+    # lista explícita de archivos que acabas de extraer (ajusta nombres)
+    targets = [
+      "data/sparc/NGC3198.csv",
+      "data/sparc/NGC2403.csv",
+      "data/sparc/NGC2841.csv",
+      "data/sparc/NGC6503.csv",
+      "data/sparc/UGC128.csv",
+      "data/sparc/DDO154.csv",
+      "data/sparc/NGC3741.csv",
+      "data/sparc/IC2574.csv",
+      "data/sparc/NGC3109.csv",
+      "data/sparc/UGC5750.csv",
+    ]
+    # run fit one-by-one
+    for f in targets:
+        if os.path.exists(f):
+            try:
+                data = load_sparc_galaxy(f)
+                fitres = fit_galaxy(data, initial=(0.01,10.0))
+                errres = bootstrap_errors(data, fitres, nboot=200)
+                fitres.update(errres)
+                plot_fit(data, fitres, fname=os.path.join(PLOTS_DIR, os.path.basename(f)+".png"))
+                # append to CSV
+                # ... (usa la lógica del script original)
+            except Exception as e:
+                print("Error con",f,e)
+        else:
+            print("No existe:", f)
