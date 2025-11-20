@@ -18,7 +18,7 @@ GALAXIES = [
     "DDO154","NGC3741","IC2574","NGC3109","NGC2976"
 ]
 
-DATA_DIR = "."
+DATA_DIR = os.path.dirname(__file__)
 RESULTS_DIR = "results"
 PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
 
