@@ -12,59 +12,52 @@ from scipy.optimize import curve_fit
 # -------------------------------------------------------------
 def load_rotmod_generic(path):
     """
-    Lector robusto para archivos SPARC.
-    Detecta automáticamente las columnas:
-    Rad, Vobs, errV, Vgas, Vdisk, Vbul
+    Lector definitivo para archivos SPARC rotmod.sin header real.
+    Asigna nombres de columnas estándar:
+    Rad, Vobs, errV, Vgas, Vdisk, Vbul, SBdisk, SBbul
     """
+    import pandas as pd
+    import numpy as np
 
-    # -------------------------------------------------------------
-    # 1. Carga flexible
-    # -------------------------------------------------------------
-    try:
-        df = pd.read_csv(path, comment='#', delim_whitespace=True)
-    except Exception:
-        df = pd.read_table(path, comment='#', sep=r"\s+", engine='python')
+    # -----------------------------------------------------------------
+    # 1. Cargar ignorando comentarios y sin header
+    # -----------------------------------------------------------------
+    df = pd.read_csv(
+        path,
+        comment="#",
+        header=None,
+        sep=r"\s+",
+        engine="python"
+    )
 
-    # Convertir nombres a minúsculas
-    cols = {c.lower(): c for c in df.columns}
+    # -----------------------------------------------------------------
+    # 2. Validación: debe haber 8 columnas EXACTAS
+    # -----------------------------------------------------------------
+    if df.shape[1] < 8:
+        raise ValueError(
+            f"Archivo {path} tiene {df.shape[1]} columnas, se esperaban 8 columnas SPARC."
+        )
 
-    # -------------------------------------------------------------
-    # 2. Detectar columnas reales SPARC
-    # -------------------------------------------------------------
-    def pick(*keys):
-        """Devuelve la primera coincidencia presente en df."""
-        for k in keys:
-            for col in cols:
-                if k in col:
-                    return cols[col]
-        return None
+    # -----------------------------------------------------------------
+    # 3. Asignamos nombres estándar SPARC
+    # -----------------------------------------------------------------
+    df.columns = [
+        "Rad", "Vobs", "errV",
+        "Vgas", "Vdisk", "Vbul",
+        "SBdisk", "SBbul"
+    ]
 
-    r_col    = pick("rad", "r", "radius")
-    v_col    = pick("vobs", "vrot", "v")
-    e_col    = pick("err", "errv", "ev", "error", "sigma")
-    gas_col  = pick("vgas", "gas")
-    disk_col = pick("vdisk", "disk")
-    bul_col  = pick("vbul", "bul")
+    # -----------------------------------------------------------------
+    # 4. Extraemos arrays correctamente
+    # -----------------------------------------------------------------
+    r       = df["Rad"].astype(float).values
+    v_obs   = df["Vobs"].astype(float).values
+    v_err   = df["errV"].astype(float).values
+    v_gas   = df["Vgas"].astype(float).values
+    v_disk  = df["Vdisk"].astype(float).values
+    v_bul   = df["Vbul"].astype(float).values
 
-    # -------------------------------------------------------------
-    # 3. Validación mínima
-    # -------------------------------------------------------------
-    if r_col is None or v_col is None:
-        print(f"ERROR: No se detectaron columnas válidas en {path}")
-        print("Columnas detectadas:", df.columns)
-        raise KeyError("Formato SPARC desconocido")
-
-    # -------------------------------------------------------------
-    # 4. Construcción del dataset interno
-    # -------------------------------------------------------------
-    r      = df[r_col].values.astype(float)
-    v_obs  = df[v_col].values.astype(float)
-    v_err  = df[e_col].values.astype(float) if e_col  else np.ones_like(v_obs)*5
-    v_gas  = df[gas_col].values.astype(float) if gas_col  else np.zeros_like(v_obs)
-    v_disk = df[disk_col].values.astype(float) if disk_col else np.zeros_like(v_obs)
-    v_bul  = df[bul_col].values.astype(float) if bul_col  else np.zeros_like(v_obs)
-
-    # Baryonic rotation curve:
+    # Curva bariónica (modelo SPARC)
     v_bary = np.sqrt(v_gas**2 + v_disk**2 + v_bul**2)
 
     return {
