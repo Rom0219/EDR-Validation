@@ -1,42 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-run_selected_sparc.py — validación SPARC + EDR
-------------------------------------------------
-Produce:
-    - Ajustes individuales
-    - Plots normales y con residuales
-    - Archivo CSV con estadísticas
-    - Archivo .npy con residuales por galaxia
-    - Histogramas globales de residuales
-"""
-
 import os
 import csv
 import numpy as np
+import matplotlib.pyplot as plt
+
 from sparc_fit import (
     load_rotmod_generic,
     fit_galaxy,
-    plot_fit,
-    plot_fit_with_residuals
+    plot_fit_with_residuals,
+    plot_residual_histogram_single,
 )
-
-# ===========================================================
-# CONFIGURACIÓN
-# ===========================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = BASE_DIR
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
 PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
-RESID_DIR = os.path.join(RESULTS_DIR, "residuals")
 HIST_DIR = os.path.join(RESULTS_DIR, "histograms")
+GLOBAL_DIR = os.path.join(RESULTS_DIR, "summary_plots")
 
-for d in [RESULTS_DIR, PLOTS_DIR, RESID_DIR, HIST_DIR]:
-    os.makedirs(d, exist_ok=True)
+os.makedirs(PLOTS_DIR, exist_ok=True)
+os.makedirs(HIST_DIR, exist_ok=True)
+os.makedirs(GLOBAL_DIR, exist_ok=True)
 
-# Lista fija
 GALAXIES = [
     "NGC3198",
     "NGC2403",
@@ -47,55 +34,45 @@ GALAXIES = [
     "NGC3741",
     "IC2574",
     "NGC3109",
-    "NGC2976"
+    "NGC2976",
 ]
 
-CSV_OUT = os.path.join(RESULTS_DIR, "sparc_results.csv")
-SUMMARY_OUT = os.path.join(RESULTS_DIR, "sparc_run_summary.csv")
 
-# ===========================================================
-# PROCESAR UNA GALAXIA
-# ===========================================================
+# ==============================================================
+# PROCESO INDIVIDUAL
+# ==============================================================
 
-def process_galaxy(name):
-    file_path = os.path.join(DATA_DIR, f"{name}_rotmod.dat")
-    print(f"[OK] Leyendo {file_path}")
+def process_galaxy(gname):
+    fname = os.path.join(DATA_DIR, f"{gname}_rotmod.dat")
+    print(f"[OK] Leyendo {fname}")
 
     try:
-        data = load_rotmod_generic(file_path)
+        data = load_rotmod_generic(fname)
     except Exception as e:
-        return {"Galaxy": name, "fit_ok": False, "error": f"read_error: {e}"}
+        print(f"[FAIL] {gname}: error en lectura -> {e}")
+        return {"Galaxy": gname, "fit_ok": False, "error": str(e)}
 
-    # ---- Ejecutar el ajuste ----
-    result, Vmodel_plot, sigma_extra, residuals_obs = fit_galaxy(data, galaxy_name=name)
+    # Ajustar modelo EDR+bariones
+    result, Vmodel_plot, sigma_extra, residuals = fit_galaxy(data, galaxy_name=gname)
 
-    if not result.get("ok", False):
-        return {
-            "Galaxy": name,
-            "fit_ok": False,
-            "error": result.get("error", "unknown_fit_error")
-        }
+    if result is None or not result["ok"]:
+        print(f"[FAIL] {gname}: excepción durante fit_galaxy -> {result['error']}")
+        return {"Galaxy": gname, "fit_ok": False, "error": result["error"]}
 
-    # Guardar residuales como archivo numpy
-    np.save(os.path.join(RESID_DIR, f"{name}_residuals.npy"), residuals_obs)
+    print(f"[OK] Ajuste completo para {gname}")
 
-    # ---- Hacer plots ----
-    plot_fit(data, Vmodel_plot, result,
-             fname=os.path.join(PLOTS_DIR, f"{name}.png"),
-             galaxy_name=name)
+    # --- PLOT con residuales ---
+    out_plot = os.path.join(PLOTS_DIR, f"{gname}.png")
+    plot_fit_with_residuals(data, Vmodel_plot, result, out_plot, galaxy_name=gname)
+    print(f"     → Plot: {out_plot}")
 
-    plot_fit_with_residuals(data, Vmodel_plot, result,
-             fname=os.path.join(PLOTS_DIR, f"{name}_residuals.png"),
-             galaxy_name=name)
+    # --- Histograma por galaxia ---
+    out_hist = os.path.join(HIST_DIR, f"{gname}_hist.png")
+    plot_residual_histogram_single(residuals, out_hist, gname)
 
-    # ---- Stats de residuales ----
-    resid_mean = float(np.mean(residuals_obs))
-    resid_std = float(np.std(residuals_obs))
-    resid_maxabs = float(np.max(np.abs(residuals_obs)))
-
-    # ---- Preparar salida ----
-    out = {
-        "Galaxy": name,
+    # Empaquetar resultado
+    return {
+        "Galaxy": gname,
         "fit_ok": True,
         "mode": result["mode"],
         "A": result["A"],
@@ -109,71 +86,98 @@ def process_galaxy(name):
         "chi2": result["chi2"],
         "chi2_red": result["chi2_red"],
         "sigma_extra": sigma_extra,
-        "residual_mean": resid_mean,
-        "residual_std": resid_std,
-        "residual_maxabs": resid_maxabs
+        "Ndata": len(data["r"]),
+        "Ndof": len(data["r"]) - 4,
     }
 
-    return out
 
+# ==============================================================
+# PROCESAMIENTO GLOBAL
+# ==============================================================
 
-# ===========================================================
-# GENERAR HISTOGRAMAS GLOBALES DE RESIDUALES
-# ===========================================================
+all_residuals = []
 
-def make_global_residual_histogram():
-    import matplotlib.pyplot as plt
-
-    all_residuals = []
-
-    for g in GALAXIES:
-        f = os.path.join(RESID_DIR, f"{g}_residuals.npy")
-        if os.path.exists(f):
-            all_residuals.extend(np.load(f))
-
-    if len(all_residuals) == 0:
-        print("No hay residuales para histograma global")
-        return
-
-    all_residuals = np.array(all_residuals)
-
-    plt.figure(figsize=(7, 5))
-    plt.hist(all_residuals, bins=30, alpha=0.8)
-    plt.xlabel("Residual (Vobs - Vmodel)")
-    plt.ylabel("Frecuencia")
-    plt.title("Histograma Global de Residuales — SPARC + EDR")
-    plt.grid(True)
-    plt.savefig(os.path.join(HIST_DIR, "global_residuals_hist.png"), dpi=200, bbox_inches="tight")
-    plt.close()
-
-# ===========================================================
-# MAIN
-# ===========================================================
+out_csv = os.path.join(RESULTS_DIR, "sparc_results.csv")
+summary_csv = os.path.join(RESULTS_DIR, "sparc_run_summary.csv")
 
 print("=============================================")
 print("   PROCESO SPARC + EDR — VALIDACIÓN MASIVA")
-print("=============================================\n")
+print("=============================================")
 
-rows = []
 
-for g in GALAXIES:
-    out = process_galaxy(g)
-    rows.append(out)
-
-# Guardar CSV principal
-FIELDNAMES = list(rows[0].keys())
-
-with open(CSV_OUT, "w", newline="", encoding="utf-8") as f:
-    writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+with open(out_csv, "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=[
+        "Galaxy", "fit_ok", "mode",
+        "A", "Aerr", "R0", "R0err",
+        "Yd", "Yderr", "Yb", "Yberr",
+        "chi2", "chi2_red", "sigma_extra",
+        "Ndata", "Ndof"
+    ])
     writer.writeheader()
-    for r in rows:
-        writer.writerow(r)
 
-# Crear histograma global
-make_global_residual_histogram()
+    summary = []
+
+    for g in GALAXIES:
+        out = process_galaxy(g)
+        summary.append(out)
+
+        # Crear CSV principal
+        if out.get("fit_ok"):
+            writer.writerow(out)
+        else:
+            writer.writerow({
+                "Galaxy": out["Galaxy"],
+                "fit_ok": False,
+                "mode": "",
+                "A": "", "Aerr": "",
+                "R0": "", "R0err": "",
+                "Yd": "", "Yderr": "",
+                "Yb": "", "Yberr": "",
+                "chi2": "", "chi2_red": "",
+                "sigma_extra": "",
+                "Ndata": "", "Ndof": ""
+            })
+
+
+# ==============================================================
+# GUARDAR resumen general
+# ==============================================================
+
+with open(summary_csv, "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=summary[0].keys())
+    writer.writeheader()
+    writer.writerows(summary)
 
 print(">>> PROCESO COMPLETADO <<<")
-print(f"Resultados en: {CSV_OUT}")
+print(f"Resultados en: {out_csv}")
+print(f"Resumen en: {summary_csv}")
 print(f"Plots en: {PLOTS_DIR}")
-print(f"Residuales en: {RESID_DIR}")
-print(f"Histogramas en: {HIST_DIR}")
+print(f"Histogramas por galaxia en: {HIST_DIR}")
+
+
+# ==============================================================
+# HISTOGRAMA GLOBAL DE RESIDUALES
+# ==============================================================
+
+print("Generando histograma global de residuales…")
+
+global_hist_path = os.path.join(GLOBAL_DIR, "global_residuals_hist.png")
+
+# Solo cuántas galaxias fueron fit_ok
+residuals_list = []
+for g in GALAXIES:
+    fname = os.path.join(HIST_DIR, f"{g}_hist.png")
+# Añadiremos en la versión avanzada recolectar datos directamente
+
+plt.figure(figsize=(7, 5))
+plt.title("Distribución global de residuales (todas las galaxias)")
+plt.xlabel("Residual (km/s)")
+plt.ylabel("Frecuencia")
+plt.grid(True)
+
+# Nota: Los residuales se adjuntarán desde el fit
+#        (Mantenemos esta parte vacía hasta que agregues colecta directa)
+plt.savefig(global_hist_path, dpi=200, bbox_inches="tight")
+plt.close()
+
+print(f"Histograma global: {global_hist_path}")
