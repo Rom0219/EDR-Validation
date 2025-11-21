@@ -1,70 +1,86 @@
 import os
-from sparc_fit import (
-    load_rotmod_generic,
-    fit_edr_rotation_curve,
-    plot_fit,
-    save_fit_result
-)
+import pandas as pd
+from sparc_fit import load_rotmod_generic, fit_galaxy, plot_fit
 
-# -------------------------------------------------------
-# CONFIG
-# -------------------------------------------------------
-DATA_DIR = os.path.dirname(__file__)
-OUT_DIR = os.path.join(DATA_DIR, "results")
+ROOT = os.path.dirname(__file__)
+DATA_DIR = ROOT
+OUT_DIR = os.path.join(ROOT, "results")
+CSV_OUT = os.path.join(OUT_DIR, "sparc_results.csv")
 PLOTS_DIR = os.path.join(OUT_DIR, "plots")
-CSV_PATH = os.path.join(OUT_DIR, "sparc_results.csv")
 
+os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
-# Galaxias SPARC estándar + las tuyas
 GALAXIES = [
-    "NGC3198", "NGC2403", "NGC2841", "NGC6503", "NGC3521",
-    "DDO154", "NGC3741", "IC2574", "NGC3109", "NGC2976"
+    "NGC3198",
+    "NGC2403",
+    "NGC2841",
+    "NGC6503",
+    "NGC3521",
+    "DDO154",
+    "NGC3741",
+    "IC2574",
+    "NGC3109",
+    "NGC2976"
 ]
 
-# -------------------------------------------------------
-# MAIN LOOP
-# -------------------------------------------------------
 print("=============================================")
 print("   PROCESO SPARC + EDR — VALIDACIÓN MASIVA")
-print("=============================================")
+print("=============================================\n")
+
+rows = []
 
 for g in GALAXIES:
-
-    fname = f"{g}_rotmod.dat"
-    fpath = os.path.join(DATA_DIR, fname)
-
-    if not os.path.isfile(fpath):
+    fname = os.path.join(DATA_DIR, f"{g}_rotmod.dat")
+    if not os.path.exists(fname):
         print(f"[NO FILE] {g}")
         continue
 
-    print(f"\n[OK] Leyendo {fpath}")
-
+    print(f"[OK] Leyendo {fname}")
     try:
-        data = load_rotmod_generic(fpath)
+        data = load_rotmod_generic(fname)
     except Exception as e:
-        print(f"[ERROR] Fallo leyendo {g}: {e}")
+        print(f"ERROR al cargar {g}: {e}")
         continue
 
-    # Ajuste EDR
-    fitres = fit_edr_rotation_curve(
-        data["R"], data["Vobs"], data["eV"]
-    )
+    result = fit_galaxy(data)
 
-    if fitres is None:
-        print(f"[ERROR] No se pudo ajustar {g}")
-        continue
+    if result["ok"]:
+        print(f"[OK] Ajuste completo para {g}")
+        plot_fname = os.path.join(PLOTS_DIR, f"{g}.png")
+        plot_fit(data, result, fname=plot_fname)
+        print(f"     → Plot: {plot_fname}\n")
 
-    # Guardar CSV
-    save_fit_result(fitres, g, CSV_PATH)
+        p = result["params"]
+        e = result["errors"]
 
-    # Graficar
-    plot_path = os.path.join(PLOTS_DIR, f"{g}.png")
-    plot_fit(data, fitres, plot_path)
+        A, R0, Yd, Yb = p
 
-    print(f"[OK] Ajuste completo para {g}")
-    print(f"     → Plot: {plot_path}")
+        rows.append({
+            "Galaxy": g,
+            "A": A,
+            "Aerr": e[0],
+            "R0": R0,
+            "R0err": e[1],
+            "Yd": Yd,
+            "Yderr": e[2],
+            "Yb": Yb,
+            "Yberr": e[3],
+            "chi2": result["chi2"],
+            "chi2_red": result["chi2_red"],
+            "sigma_extra": result["sigma_extra"],
+            "Ndata": result["Ndata"],
+            "Ndof": result["Ndof"],
+            "fit_ok": True,
+            "mode": "SPARC_restricted"
+        })
+    else:
+        print(f"[FAIL] {g}: {result['error']}\n")
+        rows.append({"Galaxy": g, "fit_ok": False})
 
-print("\n>>> PROCESO COMPLETADO <<<")
-print(f"Resultados en: {CSV_PATH}")
+df = pd.DataFrame(rows)
+df.to_csv(CSV_OUT, index=False)
+
+print(">>> PROCESO COMPLETADO <<<")
+print(f"Resultados en: {CSV_OUT}")
 print(f"Plots en: {PLOTS_DIR}")
