@@ -1,16 +1,23 @@
+#!/usr/bin/env python3
+"""
+run_selected_sparc.py
+Nuevo lanzador compatible con la versión final de sparc_fit.py.
+
+- Escanea la lista de galaxias (configurable)
+- Carga cada *_rotmod.dat vía load_rotmod_generic
+- Llama a fit_galaxy (devuelve result, modelV)
+- Dibuja y salva la figura usando plot_fit
+- Añade resultados al CSV con append_result
+- Maneja gracefully galaxies sin bulbo y errores de ajuste
+"""
+
 import os
+import sys
+import time
+import traceback
 import pandas as pd
-from sparc_fit import load_rotmod_generic, fit_galaxy, plot_fit
 
-ROOT = os.path.dirname(__file__)
-DATA_DIR = ROOT
-OUT_DIR = os.path.join(ROOT, "results")
-CSV_OUT = os.path.join(OUT_DIR, "sparc_results.csv")
-PLOTS_DIR = os.path.join(OUT_DIR, "plots")
-
-os.makedirs(OUT_DIR, exist_ok=True)
-os.makedirs(PLOTS_DIR, exist_ok=True)
-
+# Ajusta esta lista si quieres otras galaxias o un directorio distinto
 GALAXIES = [
     "NGC3198",
     "NGC2403",
@@ -24,63 +31,116 @@ GALAXIES = [
     "NGC2976"
 ]
 
-print("=============================================")
-print("   PROCESO SPARC + EDR — VALIDACIÓN MASIVA")
-print("=============================================\n")
+# Rutas locales (asegúrate de ejecutar desde la raíz del repo)
+BASE_DIR = os.path.dirname(__file__)  # EDR/data/sparc
+RESULTS_DIR = os.path.join(BASE_DIR, "results")
+PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
+CSV_OUT = os.path.join(RESULTS_DIR, "sparc_results.csv")
 
-rows = []
+# Ruta al PDF subido (referencia/URL local)
+UPLOADED_PDF = "/mnt/data/FORMULAS_V2.pdf"
 
-for g in GALAXIES:
-    fname = os.path.join(DATA_DIR, f"{g}_rotmod.dat")
-    if not os.path.exists(fname):
-        print(f"[NO FILE] {g}")
-        continue
+# Crear directorios si no existen
+os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(PLOTS_DIR, exist_ok=True)
+
+# Import funciones del módulo sparc_fit.py (asume que está en el mismo folder)
+try:
+    from sparc_fit import load_rotmod_generic, fit_galaxy, plot_fit, append_result
+except Exception as e:
+    print("ERROR: no pude importar funciones desde sparc_fit.py. Asegúrate de que el archivo está en EDR/data/sparc/")
+    print("Detalle:", e)
+    sys.exit(1)
+
+
+def process_galaxy(galaxy_name):
+    fname = os.path.join(BASE_DIR, f"{galaxy_name}_rotmod.dat")
+    if not os.path.isfile(fname):
+        print(f"[NO FILE] {galaxy_name} — archivo faltante: {fname}")
+        return {"Galaxy": galaxy_name, "fit_ok": False, "error": "file_missing"}
 
     print(f"[OK] Leyendo {fname}")
     try:
         data = load_rotmod_generic(fname)
     except Exception as e:
-        print(f"ERROR al cargar {g}: {e}")
-        continue
+        print(f"[ERROR] al cargar datos de {galaxy_name}: {e}")
+        traceback.print_exc()
+        return {"Galaxy": galaxy_name, "fit_ok": False, "error": f"load_error: {e}"}
 
-    result = fit_galaxy(data)
+    # Ajuste
+    t0 = time.time()
+    try:
+        result, modelV = fit_galaxy(data)
+    except Exception as e:
+        print(f"[FAIL] {galaxy_name}: excepción durante fit_galaxy -> {e}")
+        traceback.print_exc()
+        return {"Galaxy": galaxy_name, "fit_ok": False, "error": f"fit_exception: {e}"}
 
-    if result["ok"]:
-        print(f"[OK] Ajuste completo para {g}")
-        plot_fname = os.path.join(PLOTS_DIR, f"{g}.png")
-        plot_fit(data, result, fname=plot_fname)
-        print(f"     → Plot: {plot_fname}\n")
+    if result is None:
+        print(f"[FAIL] {galaxy_name}: ajuste devolvió None y mensaje de error.")
+        return {"Galaxy": galaxy_name, "fit_ok": False, "error": "fit_failed_no_result"}
 
-        p = result["params"]
-        e = result["errors"]
+    # Guardado de plot
+    plot_path = os.path.join(PLOTS_DIR, f"{galaxy_name}.png")
+    try:
+        plot_fit(data, modelV, result, fname=plot_path, galaxy_name=galaxy_name)
+    except Exception as e:
+        print(f"[WARN] {galaxy_name}: fallo al generar plot: {e}")
+        traceback.print_exc()
 
-        A, R0, Yd, Yb = p
+    # Append CSV result (usa append_result del módulo)
+    try:
+        append_result(CSV_OUT, galaxy_name, result)
+    except Exception as e:
+        print(f"[WARN] {galaxy_name}: no pude escribir CSV: {e}")
+        traceback.print_exc()
 
-        rows.append({
-            "Galaxy": g,
-            "A": A,
-            "Aerr": e[0],
-            "R0": R0,
-            "R0err": e[1],
-            "Yd": Yd,
-            "Yderr": e[2],
-            "Yb": Yb,
-            "Yberr": e[3],
-            "chi2": result["chi2"],
-            "chi2_red": result["chi2_red"],
-            "sigma_extra": result["sigma_extra"],
-            "Ndata": result["Ndata"],
-            "Ndof": result["Ndof"],
-            "fit_ok": True,
-            "mode": "SPARC_restricted"
-        })
-    else:
-        print(f"[FAIL] {g}: {result['error']}\n")
-        rows.append({"Galaxy": g, "fit_ok": False})
+    t1 = time.time()
+    elapsed = t1 - t0
+    print(f"[OK] Ajuste completo para {galaxy_name} (tiempo: {elapsed:.2f}s)")
+    print(f"     → Plot: {plot_path}\n")
 
-df = pd.DataFrame(rows)
-df.to_csv(CSV_OUT, index=False)
+    # Devolver summary para inspección en memoria
+    row = {
+        "Galaxy": galaxy_name,
+        "A": result.get("A"),
+        "R0": result.get("R0"),
+        "Yd": result.get("Yd"),
+        "Yb": result.get("Yb"),
+        "chi2": result.get("chi2"),
+        "chi2_red": result.get("chi2_red"),
+        "fit_ok": True,
+        "mode": "EDR_barions"
+    }
+    return row
 
-print(">>> PROCESO COMPLETADO <<<")
-print(f"Resultados en: {CSV_OUT}")
-print(f"Plots en: {PLOTS_DIR}")
+
+def main():
+    print("=============================================")
+    print("   PROCESO SPARC + EDR — VALIDACIÓN MASIVA")
+    print("   (usar PDF de referencia en: {})".format(UPLOADED_PDF))
+    print("=============================================\n")
+
+    summary_rows = []
+
+    for g in GALAXIES:
+        try:
+            row = process_galaxy(g)
+            summary_rows.append(row)
+        except Exception as e:
+            print(f"[ERROR GRAVE] al procesar {g}: {e}")
+            traceback.print_exc()
+            summary_rows.append({"Galaxy": g, "fit_ok": False, "error": str(e)})
+
+    # Guardar resumen completo (adicional al CSV individual)
+    summary_df = pd.DataFrame(summary_rows)
+    summary_path = os.path.join(RESULTS_DIR, "sparc_run_summary.csv")
+    summary_df.to_csv(summary_path, index=False)
+    print(">>> PROCESO COMPLETADO <<<")
+    print(f"Resumen guardado en: {summary_path}")
+    print(f"Resultados en (CSV principal): {CSV_OUT}")
+    print(f"Plots en: {PLOTS_DIR}")
+
+
+if __name__ == "__main__":
+    main()
