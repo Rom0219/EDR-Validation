@@ -2,30 +2,34 @@
 # -*- coding: utf-8 -*-
 
 """
-sparc_fit.py — versión científica (Opción A)
--------------------------------------------
-✔ Lectura SPARC
-✔ Modelo EDR + bariones (solo para puntos observados)
-✔ Modelo suave SOLO EDR (sin bariones)
-✔ Ajuste estable
-✔ Residuales y sigma_extra
+sparc_fit.py — versión final estable
+
+Incluye:
+
+✔ Lectura estandarizada SPARC rotmod
+✔ Modelo total: gas + disco + bulbo + EDR
+✔ Ajuste robusto + jitter
+✔ Plot clásico
+✔ Plot con residuales
+✔ Histograma por galaxia
+✔ Compatible 100% con run_selected_sparc.py
 """
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 
 
 # ===========================================================
-# 1. LECTURA DE ARCHIVO SPARC
+# 1. LECTURA SPARC
 # ===========================================================
 
 def load_rotmod_generic(path):
     df = pd.read_csv(path, comment='#', sep=r'\s+')
 
     if len(df.columns) < 8:
-        raise ValueError("Archivo SPARC con columnas insuficientes")
+        raise KeyError("Formato SPARC desconocido")
 
     df.columns = ["r", "Vobs", "errV", "Vgas", "Vdisk", "Vbul", "SBdisk", "SBbul"]
 
@@ -35,34 +39,30 @@ def load_rotmod_generic(path):
         "errV": df["errV"].values.astype(float),
         "Vgas": df["Vgas"].values.astype(float),
         "Vdisk": df["Vdisk"].values.astype(float),
-        "Vbul": df["Vbul"].values.astype(float)
+        "Vbul": df["Vbul"].values.astype(float),
     }
 
 
 # ===========================================================
-# 2. MODELO EDR
+# 2. MODELO EDR + BARIONES
 # ===========================================================
 
-def v_edr(r, A, R0):
+def v_edr_component(r, A, R0):
     return A * (1 - np.exp(-r / R0))
 
 
-# Modelo TOTAL para puntos observados (con bariones)
-def model_obs(r, A, R0, Yd, Yb, Vdisk, Vbul, Vgas):
-    Vtot = np.sqrt((Yd * Vdisk)**2 +
-                   (Yb * Vbul)**2 +
-                   Vgas**2 +
-                   v_edr(r, A, R0)**2)
-    return Vtot
-
-
-# Modelo SUAVE (solo EDR)
-def model_smooth(r, A, R0):
-    return v_edr(r, A, R0)
+def v_model_total(r, A, R0, Yd, Yb, Vdisk, Vbul, Vgas):
+    """Velocidad total cuadrática"""
+    return np.sqrt(
+        (Yd * Vdisk)**2 +
+        (Yb * Vbul)**2 +
+        (Vgas)**2 +
+        v_edr_component(r, A, R0)**2
+    )
 
 
 # ===========================================================
-# 3. AJUSTE COMPLETO
+# 3. AJUSTE fit_galaxy()
 # ===========================================================
 
 def fit_galaxy(data, galaxy_name="Galaxy"):
@@ -71,27 +71,30 @@ def fit_galaxy(data, galaxy_name="Galaxy"):
     Vobs = data["Vobs"]
     eV = data["errV"]
 
-    Vgas = data["Vgas"]
     Vdisk = data["Vdisk"]
     Vbul = data["Vbul"]
+    Vgas = data["Vgas"]
 
     # Parámetros iniciales
-    p0 = [120, 2.0, 0.5, 0.1]
-    bounds = ([10, 0.01, 0.0, 0.0],
-              [400, 10.0, 2.0, 1.0])
+    p0 = [120, 2.0, 0.5, 0.1]  # A, R0, Yd, Yb
 
-    def model_fit(r, A, R0, Yd, Yb):
-        return model_obs(r, A, R0, Yd, Yb, Vdisk, Vbul, Vgas)
+    bounds = (
+        [10, 0.01, 0.0, 0.0],
+        [400, 10.0, 2.0, 1.0]
+    )
 
+    def model_obs(r_array, A, R0, Yd, Yb):
+        return v_model_total(r_array, A, R0, Yd, Yb, Vdisk, Vbul, Vgas)
+
+    # Intentar ajustarlo
     try:
         popt, pcov = curve_fit(
-            model_fit,
-            r, Vobs,
+            model_obs, r, Vobs,
             sigma=eV,
-            absolute_sigma=True,
             p0=p0,
             bounds=bounds,
-            maxfev=20000
+            absolute_sigma=True,
+            maxfev=25000
         )
     except Exception as e:
         return {"ok": False, "error": str(e)}, None, None, None
@@ -99,22 +102,33 @@ def fit_galaxy(data, galaxy_name="Galaxy"):
     A, R0, Yd, Yb = popt
     perr = np.sqrt(np.diag(pcov))
 
-    # Modelo observado
-    Vmodel_obs = model_fit(r, *popt)
-
-    # Modelo suave SOLO EDR
+    # GRID suave para el plot
     r_plot = np.linspace(min(r), max(r), 300)
-    Vmodel_plot = model_smooth(r_plot, A, R0)
+    # Interpolar bariones al r_plot
+    Vdisk_p = np.interp(r_plot, r, Vdisk)
+    Vbul_p  = np.interp(r_plot, r, Vbul)
+    Vgas_p  = np.interp(r_plot, r, Vgas)
+
+    def model_smooth(r_arr):
+        return v_model_total(r_arr, A, R0, Yd, Yb, Vdisk_p, Vbul_p, Vgas_p)
+
+    Vmodel_plot = model_smooth(r_plot)
+
+    # Modelo sobre puntos observados
+    Vmodel_obs = model_obs(r, *popt)
 
     # Chi2
     chi2 = np.sum(((Vobs - Vmodel_obs) / eV)**2)
     dof = len(r) - len(popt)
     chi2_red = chi2 / dof if dof > 0 else np.nan
 
-    # Residuales
+    # Residuos observacionales
     residuals = Vobs - Vmodel_obs
+
+    # sigma extra
     sigma_extra = np.std(residuals)
 
+    # Resultado
     result = {
         "ok": True,
         "A": A,
@@ -128,49 +142,81 @@ def fit_galaxy(data, galaxy_name="Galaxy"):
         "chi2": chi2,
         "chi2_red": chi2_red,
         "r_plot": r_plot,
-        "mode": "EDR_scientific"
+        "mode": "EDR_barions_interpolated"
     }
 
     return result, Vmodel_plot, sigma_extra, residuals
 
 
 # ===========================================================
-# 4. PLOT + RESIDUALES
+# 4. PLOT BÁSICO
 # ===========================================================
 
-def plot_fit_with_residuals(data, Vmodel, result,
-                            fname="plot.png",
-                            galaxy_name="Galaxy"):
+def plot_fit(data, Vmodel_plot, result, fname, galaxy_name="Galaxy"):
+    r = data["r"]
+    Vobs = data["Vobs"]
+    eV = data["errV"]
+
+    plt.figure(figsize=(7, 5))
+    plt.errorbar(r, Vobs, yerr=eV, fmt="o", label="Observado")
+    plt.plot(result["r_plot"], Vmodel_plot, "-b", lw=2, label="Modelo")
+    plt.grid()
+    plt.xlabel("Radio (kpc)")
+    plt.ylabel("Velocidad (km/s)")
+    plt.legend()
+    plt.title(f"{galaxy_name} — SPARC+EDR")
+    plt.savefig(fname, dpi=200, bbox_inches="tight")
+    plt.close()
+
+
+# ===========================================================
+# 5. PLOT CON RESIDUALES
+# ===========================================================
+
+def plot_fit_with_residuals(data, Vmodel_plot, result, fname, galaxy_name="Galaxy"):
 
     r = data["r"]
     Vobs = data["Vobs"]
     eV = data["errV"]
 
-    # Interpolo SOLO curva suave EDR → residuales no cambian (porque usamos modelo_obs para residuales)
-    model_interp = np.interp(r, result["r_plot"], Vmodel)
+    # Interpolar modelo al r observado
+    model_interp = np.interp(r, result["r_plot"], Vmodel_plot)
     residuals = Vobs - model_interp
 
     fig = plt.figure(figsize=(7, 8))
-    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.15)
+    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.12)
 
-    # Panel principal
+    # PANEL SUPERIOR
     ax1 = fig.add_subplot(gs[0])
-    ax1.errorbar(r, Vobs, yerr=eV, fmt="o", label="Observado", alpha=0.8)
-    ax1.plot(result["r_plot"], Vmodel, "-b", lw=2, label="EDR (suave)")
-
+    ax1.errorbar(r, Vobs, yerr=eV, fmt="o", alpha=0.8)
+    ax1.plot(result["r_plot"], Vmodel_plot, "-b", lw=2)
     ax1.set_ylabel("Velocidad (km/s)")
-    ax1.set_title(f"{galaxy_name} — SPARC + EDR")
+    ax1.set_title(f"{galaxy_name}")
     ax1.grid(True)
-    ax1.legend()
 
-    # Residuales
+    # PANEL INFERIOR
     ax2 = fig.add_subplot(gs[1])
     ax2.axhline(0, color="k", lw=1)
     ax2.errorbar(r, residuals, yerr=eV, fmt="o", color="darkred")
-
     ax2.set_xlabel("Radio (kpc)")
     ax2.set_ylabel("Res.")
     ax2.grid(True)
 
+    plt.savefig(fname, dpi=200, bbox_inches="tight")
+    plt.close()
+
+
+# ===========================================================
+# 6. HISTOGRAMA POR GALAXIA
+# ===========================================================
+
+def plot_residual_histogram_single(residuals, fname, galaxy_name="Galaxy"):
+
+    plt.figure(figsize=(6, 4))
+    plt.hist(residuals, bins=15, alpha=0.8)
+    plt.xlabel("Residual (km/s)")
+    plt.ylabel("Frecuencia")
+    plt.title(f"Histograma — {galaxy_name}")
+    plt.grid(True)
     plt.savefig(fname, dpi=200, bbox_inches="tight")
     plt.close()
