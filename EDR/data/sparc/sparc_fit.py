@@ -221,7 +221,7 @@ def plot_residuals_hist_global(residuals_list, fname="hist_global.png", figsize=
     all_res = np.concatenate([np.asarray(x) for x in residuals_list if len(x) > 0])
     plt.figure(figsize=figsize)
     plt.hist(all_res, bins=40, alpha=0.85, edgecolor="black")
-    plt.axvline(0, color="red", linestyle="--", lw=1.4")
+    plt.axvline(0, color="red", linestyle="--", lw=1.4)
     plt.title("Histograma global de residuales — SPARC + EDR")
     plt.xlabel("Residual (km/s)")
     plt.ylabel("Frecuencia")
