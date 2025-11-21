@@ -1,23 +1,39 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
 run_selected_sparc.py
-Nuevo lanzador compatible con la versión final de sparc_fit.py.
+--------------------------------------
+Pipeline para procesar automáticamente un conjunto de galaxias SPARC
+usando el modelo EDR + bariones + jitter + restricciones físicas.
 
-- Escanea la lista de galaxias (configurable)
-- Carga cada *_rotmod.dat vía load_rotmod_generic
-- Llama a fit_galaxy (devuelve result, modelV)
-- Dibuja y salva la figura usando plot_fit
-- Añade resultados al CSV con append_result
-- Maneja gracefully galaxies sin bulbo y errores de ajuste
+Compatible con fit_galaxy() que ahora retorna:
+    result, Vmodel, sigma_extra
 """
 
 import os
-import sys
-import time
-import traceback
-import pandas as pd
+import csv
+import numpy as np
+from sparc_fit import (
+    load_rotmod_generic,
+    fit_galaxy,
+    plot_fit,
+)
 
-# Ajusta esta lista si quieres otras galaxias o un directorio distinto
+# -----------------------------------------
+# CONFIGURACIÓN DE RUTAS
+# -----------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = BASE_DIR
+RESULTS_DIR = os.path.join(BASE_DIR, "results")
+PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
+
+os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(PLOTS_DIR, exist_ok=True)
+
+# -----------------------------------------
+# LISTA DE GALAXIAS A PROCESAR
+# -----------------------------------------
 GALAXIES = [
     "NGC3198",
     "NGC2403",
@@ -28,119 +44,114 @@ GALAXIES = [
     "NGC3741",
     "IC2574",
     "NGC3109",
-    "NGC2976"
+    "NGC2976",
 ]
 
-# Rutas locales (asegúrate de ejecutar desde la raíz del repo)
-BASE_DIR = os.path.dirname(__file__)  # EDR/data/sparc
-RESULTS_DIR = os.path.join(BASE_DIR, "results")
-PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
-CSV_OUT = os.path.join(RESULTS_DIR, "sparc_results.csv")
 
-# Ruta al PDF subido (referencia/URL local)
-UPLOADED_PDF = "/mnt/data/FORMULAS_V2.pdf"
+# -------------------------------------------------------
+# PROCESADOR DE UNA GALAXIA INDIVIDUAL
+# -------------------------------------------------------
+def process_galaxy(galaxy):
+    """
+    Realiza:
+    1) Lectura del archivo rotmod
+    2) Ajuste con EDR + bariones + jitter
+    3) Plot con predicción EDR
+    4) Retorno de parámetros para guardarlos en CSV
+    """
 
-# Crear directorios si no existen
-os.makedirs(RESULTS_DIR, exist_ok=True)
-os.makedirs(PLOTS_DIR, exist_ok=True)
+    filename = f"{galaxy}_rotmod.dat"
+    path = os.path.join(DATA_DIR, filename)
 
-# Import funciones del módulo sparc_fit.py (asume que está en el mismo folder)
-try:
-    from sparc_fit import load_rotmod_generic, fit_galaxy, plot_fit, append_result
-except Exception as e:
-    print("ERROR: no pude importar funciones desde sparc_fit.py. Asegúrate de que el archivo está en EDR/data/sparc/")
-    print("Detalle:", e)
-    sys.exit(1)
+    print(f"[OK] Leyendo {path}")
 
-
-def process_galaxy(galaxy_name):
-    fname = os.path.join(BASE_DIR, f"{galaxy_name}_rotmod.dat")
-    if not os.path.isfile(fname):
-        print(f"[NO FILE] {galaxy_name} — archivo faltante: {fname}")
-        return {"Galaxy": galaxy_name, "fit_ok": False, "error": "file_missing"}
-
-    print(f"[OK] Leyendo {fname}")
+    # --- 1) Carga ---
     try:
-        data = load_rotmod_generic(fname)
+        data = load_rotmod_generic(path)
     except Exception as e:
-        print(f"[ERROR] al cargar datos de {galaxy_name}: {e}")
-        traceback.print_exc()
-        return {"Galaxy": galaxy_name, "fit_ok": False, "error": f"load_error: {e}"}
+        print(f"[FAIL] {galaxy}: error al leer -> {e}")
+        return {"Galaxy": galaxy, "fit_ok": False, "error": str(e)}
 
-    # Ajuste
-    t0 = time.time()
+    # --- 2) Ajuste ---
     try:
-        result, modelV = fit_galaxy(data)
+        # AHORA SON 3 VALORES
+        result, modelV, sigma_extra = fit_galaxy(data, galaxy_name=galaxy)
     except Exception as e:
-        print(f"[FAIL] {galaxy_name}: excepción durante fit_galaxy -> {e}")
-        traceback.print_exc()
-        return {"Galaxy": galaxy_name, "fit_ok": False, "error": f"fit_exception: {e}"}
+        print(f"[FAIL] {galaxy}: excepción durante fit_galaxy -> {e}")
+        return {"Galaxy": galaxy, "fit_ok": False, "error": str(e)}
 
-    if result is None:
-        print(f"[FAIL] {galaxy_name}: ajuste devolvió None y mensaje de error.")
-        return {"Galaxy": galaxy_name, "fit_ok": False, "error": "fit_failed_no_result"}
+    if not result["ok"]:
+        print(f"[FAIL] {galaxy}: ajuste fallido")
+        return {"Galaxy": galaxy, "fit_ok": False, "error": "fit_failed"}
 
-    # Guardado de plot
-    plot_path = os.path.join(PLOTS_DIR, f"{galaxy_name}.png")
+    # --- 3) Plot ---
+    out_plot = os.path.join(PLOTS_DIR, f"{galaxy}.png")
     try:
-        plot_fit(data, modelV, result, fname=plot_path, galaxy_name=galaxy_name)
+        plot_fit(data, modelV, result, fname=out_plot, galaxy_name=galaxy)
     except Exception as e:
-        print(f"[WARN] {galaxy_name}: fallo al generar plot: {e}")
-        traceback.print_exc()
+        print(f"[FAIL] {galaxy}: error al generar plot -> {e}")
 
-    # Append CSV result (usa append_result del módulo)
-    try:
-        append_result(CSV_OUT, galaxy_name, result)
-    except Exception as e:
-        print(f"[WARN] {galaxy_name}: no pude escribir CSV: {e}")
-        traceback.print_exc()
+    print(f"[OK] Ajuste completo para {galaxy}")
+    print(f"     → Plot: {out_plot}")
 
-    t1 = time.time()
-    elapsed = t1 - t0
-    print(f"[OK] Ajuste completo para {galaxy_name} (tiempo: {elapsed:.2f}s)")
-    print(f"     → Plot: {plot_path}\n")
-
-    # Devolver summary para inspección en memoria
-    row = {
-        "Galaxy": galaxy_name,
-        "A": result.get("A"),
-        "R0": result.get("R0"),
-        "Yd": result.get("Yd"),
-        "Yb": result.get("Yb"),
-        "chi2": result.get("chi2"),
-        "chi2_red": result.get("chi2_red"),
+    # --- 4) Retornar registro ---
+    return {
+        "Galaxy": galaxy,
+        "A": result["A"],
+        "R0": result["R0"],
+        "Yd": result["Yd"],
+        "Yb": result["Yb"],
+        "chi2": result["chi2"],
+        "chi2_red": result["chi2_red"],
+        "sigma_extra": sigma_extra,
         "fit_ok": True,
-        "mode": "EDR_barions"
+        "mode": "EDR_barions_jitter_conditioned"
     }
-    return row
 
 
-def main():
+# -------------------------------------------------------
+# EJECUCIÓN MASIVA
+# -------------------------------------------------------
+if __name__ == "__main__":
     print("=============================================")
     print("   PROCESO SPARC + EDR — VALIDACIÓN MASIVA")
-    print("   (usar PDF de referencia en: {})".format(UPLOADED_PDF))
+    print("   (usar PDF de referencia en: /mnt/data/FORMULAS_V2.pdf)")
     print("=============================================\n")
 
-    summary_rows = []
+    rows = []
 
     for g in GALAXIES:
-        try:
-            row = process_galaxy(g)
-            summary_rows.append(row)
-        except Exception as e:
-            print(f"[ERROR GRAVE] al procesar {g}: {e}")
-            traceback.print_exc()
-            summary_rows.append({"Galaxy": g, "fit_ok": False, "error": str(e)})
+        row = process_galaxy(g)
+        rows.append(row)
 
-    # Guardar resumen completo (adicional al CSV individual)
-    summary_df = pd.DataFrame(summary_rows)
-    summary_path = os.path.join(RESULTS_DIR, "sparc_run_summary.csv")
-    summary_df.to_csv(summary_path, index=False)
+    # Guardar CSV principal
+    out_csv = os.path.join(RESULTS_DIR, "sparc_results.csv")
+    with open(out_csv, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "Galaxy", "A", "R0", "Yd", "Yb",
+                "chi2", "chi2_red",
+                "sigma_extra", "fit_ok", "mode"
+            ]
+        )
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+
+    # Guardar resumen simple
+    out_summary = os.path.join(RESULTS_DIR, "sparc_run_summary.csv")
+    with open(out_summary, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["Galaxy", "fit_ok", "mode"])
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({
+                "Galaxy": r["Galaxy"],
+                "fit_ok": r["fit_ok"],
+                "mode": r.get("mode", "")
+            })
+
     print(">>> PROCESO COMPLETADO <<<")
-    print(f"Resumen guardado en: {summary_path}")
-    print(f"Resultados en (CSV principal): {CSV_OUT}")
+    print(f"Resumen guardado en: {out_summary}")
+    print(f"Resultados en (CSV principal): {out_csv}")
     print(f"Plots en: {PLOTS_DIR}")
-
-
-if __name__ == "__main__":
-    main()
