@@ -1,68 +1,65 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-import pandas as pd
+"""
+Parse SPARC Table2 (mass models per radius) into a DataFrame and per-galaxy aggregates.
+Input: same TXT (it contains many repeated galaxy blocks)
+Output: CSV with per-radius rows and an optional per-galaxy stats CSV.
+"""
 import re
-import os
+import pandas as pd
+INFILE = "/workspaces/EDR-Validation/EDR/data/sparc/SPARC_Lelli2016c.txt.txt"
+OUT_RADIAL = "/workspaces/EDR-Validation/EDR/data/sparc/SPARC_table2_radial.csv"
+OUT_GAL_SUM = "/workspaces/EDR-Validation/EDR/data/sparc/SPARC_table2_per_galaxy.csv"
 
-# Ruta correcta del archivo SPARC
-BASE_DIR = os.path.dirname(__file__)
-INPUT_FILE = os.path.join(BASE_DIR, "SPARC_Lelli2016c.txt.txt")
-
-def parse_table2(file_path):
-    """
-    Parsea el archivo SPARC_Lelli2016c en formato texto/mrt
-    y devuelve un DataFrame usable.
-    """
+def parse_table2(path):
     rows = []
-    current = {}
-
-    with open(file_path, "r", encoding="latin-1") as f:
-        for line in f:
-            line = line.strip()
-
-            if line.startswith("Object"):
-                if current:
-                    rows.append(current)
-                current = {"Galaxy": line.split()[1]}
-
-            elif "Distance" in line and "Mpc" in line:
-                num = re.findall(r"([\d\.]+)", line)
-                if num:
-                    current["Distance_Mpc"] = float(num[0])
-
-            elif "Inclination" in line:
-                nums = re.findall(r"([\d\.]+)", line)
-                if nums:
-                    current["Incl_deg"] = float(nums[0])
-
-            elif "Ldisk" in line:
-                nums = re.findall(r"([\d\.Ee+-]+)", line)
-                if nums:
-                    current["Ldisk"] = float(nums[0])
-
-            elif "Lbul" in line:
-                nums = re.findall(r"([\d\.Ee+-]+)", line)
-                if nums:
-                    current["Lbul"] = float(nums[0])
-
-            elif "Mgas" in line:
-                nums = re.findall(r"([\d\.Ee+-]+)", line)
-                if nums:
-                    current["Mgas"] = float(nums[0])
-
-    if current:
-        rows.append(current)
-
-    return pd.DataFrame(rows)
-
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for ln in f:
+            ln = ln.rstrip("\n")
+            if not ln.strip():
+                continue
+            # detect radial data lines: start with ID then distance then radius etc.
+            if re.match(r"^[A-Za-z0-9\-\_\.]+\s+[-+]?\d", ln):
+                parts = re.sub(r"\s+", " ", ln).strip().split(" ")
+                # expected: ID, D, R, Vobs, e_Vobs, Vgas, Vdisk, Vbul, SBdisk, SBbul
+                try:
+                    ID = parts[0]
+                    D = float(parts[1])
+                    R = float(parts[2])
+                    Vobs = float(parts[3])
+                    eV = float(parts[4])
+                    Vgas = float(parts[5])
+                    Vdisk = float(parts[6])
+                    Vbul = float(parts[7])
+                    SBdisk = float(parts[8]) if len(parts) > 8 else None
+                    SBbul = float(parts[9]) if len(parts) > 9 else None
+                    rows.append({
+                        "Galaxy": ID,
+                        "D_Mpc": D,
+                        "R_kpc": R,
+                        "Vobs": Vobs,
+                        "eV": eV,
+                        "Vgas": Vgas,
+                        "Vdisk": Vdisk,
+                        "Vbul": Vbul,
+                        "SBdisk": SBdisk,
+                        "SBbul": SBbul
+                    })
+                except Exception:
+                    continue
+    df = pd.DataFrame(rows)
+    df.to_csv(OUT_RADIAL, index=False)
+    # per-galaxy summary
+    g = df.groupby("Galaxy").agg({
+        "R_kpc":"max",
+        "Vobs":"count",
+        "Vgas":"mean",
+        "Vdisk":"mean",
+        "Vbul":"mean"
+    }).rename(columns={"Vobs":"Nradial"})
+    g.to_csv(OUT_GAL_SUM)
+    return df, g
 
 if __name__ == "__main__":
-    print("Usando archivo:", INPUT_FILE)
-
-    df = parse_table2(INPUT_FILE)
-
-    print(df.head())
-    df.to_csv(os.path.join(BASE_DIR, "SPARC_Lelli2016_Table2.csv"), index=False)
-    print("\nArchivo generado en:")
-    print(os.path.join(BASE_DIR, "SPARC_Lelli2016_Table2.csv"))
+    df, g = parse_table2(INFILE)
+    print(f"Radial rows: {len(df)}, Galaxies: {len(g)}")
