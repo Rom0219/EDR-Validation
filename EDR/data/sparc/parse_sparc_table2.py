@@ -1,37 +1,68 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import pandas as pd
 import re
+import os
 
-INPUT_FILE = "/mnt/data/SPARC_Lelli2016c.txt.txt"
-OUTPUT_FILE = "EDR/data/sparc/SPARC_Lelli2016_Table2.csv"
+# Ruta correcta del archivo SPARC
+BASE_DIR = os.path.dirname(__file__)
+INPUT_FILE = os.path.join(BASE_DIR, "SPARC_Lelli2016c.txt.txt")
 
 def parse_table2(file_path):
+    """
+    Parsea el archivo SPARC_Lelli2016c en formato texto/mrt
+    y devuelve un DataFrame usable.
+    """
     rows = []
-    pat = re.compile(r"(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)")
+    current = {}
 
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="latin-1") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#"):
-                continue
 
-            m = pat.match(line)
-            if not m:
-                continue
+            if line.startswith("Object"):
+                if current:
+                    rows.append(current)
+                current = {"Galaxy": line.split()[1]}
 
-            galaxy, dist, inc, m_d, m_b, m_g = m.groups()
-            rows.append({
-                "Galaxy": galaxy,
-                "Distance_Mpc": float(dist),
-                "Incl_deg": float(inc),
-                "Ldisk": float(m_d),
-                "Lbul": float(m_b),
-                "Mgas": float(m_g)
-            })
+            elif "Distance" in line and "Mpc" in line:
+                num = re.findall(r"([\d\.]+)", line)
+                if num:
+                    current["Distance_Mpc"] = float(num[0])
+
+            elif "Inclination" in line:
+                nums = re.findall(r"([\d\.]+)", line)
+                if nums:
+                    current["Incl_deg"] = float(nums[0])
+
+            elif "Ldisk" in line:
+                nums = re.findall(r"([\d\.Ee+-]+)", line)
+                if nums:
+                    current["Ldisk"] = float(nums[0])
+
+            elif "Lbul" in line:
+                nums = re.findall(r"([\d\.Ee+-]+)", line)
+                if nums:
+                    current["Lbul"] = float(nums[0])
+
+            elif "Mgas" in line:
+                nums = re.findall(r"([\d\.Ee+-]+)", line)
+                if nums:
+                    current["Mgas"] = float(nums[0])
+
+    if current:
+        rows.append(current)
 
     return pd.DataFrame(rows)
 
+
 if __name__ == "__main__":
+    print("Usando archivo:", INPUT_FILE)
+
     df = parse_table2(INPUT_FILE)
-    df.to_csv(OUTPUT_FILE, index=False)
-    print(f"SAVED: {OUTPUT_FILE}")
+
     print(df.head())
+    df.to_csv(os.path.join(BASE_DIR, "SPARC_Lelli2016_Table2.csv"), index=False)
+    print("\nArchivo generado en:")
+    print(os.path.join(BASE_DIR, "SPARC_Lelli2016_Table2.csv"))
