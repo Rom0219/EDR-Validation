@@ -1,161 +1,185 @@
+"""
+Carga:
+ - EDR/data/sparc/sparc_results.csv  (resultados de tus ajustes: A, R0, Yd, Yb, sigma_extra...)
+ - EDR/data/sparc/SPARC_Table1_parsed.csv (output de parse_table1)
+ - EDR/data/sparc/SPARC_Table2_parsed.csv (output de parse_table2)  <- opcional en este script
+Calcula M_bar para cada galaxia:
+ M_bar = Yd * L_disk + Yb * L_bul + M_gas
+NOTA: Revisar las unidades:
+ - SPARC L[3.6] viene dado en 10^9 L_sun (según Table1)
+ - MHI viene dado en 10^9 M_sun (Table1 indica la unidad; confirmar)
+Ajusta conversiones si fuese necesario (ej: multiplicar por 1e9).
+Hace regresión log10(A) vs log10(M_bar) y guarda plots y CSV de salida.
+"""
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.stats import linregress
-import re
-import os
+from pathlib import Path
+from scipy import stats
 
-# ------------------------------------------------------------
-# 1. CARGADOR GENERAL PARA SPARC_Lelli2016c.txt.txt
-# ------------------------------------------------------------
+# Paths (ajusta si tus paths son distintos)
+RESULTS_FILE = Path("EDR/data/sparc/sparc_results.csv")
+TABLE1_FILE = Path("EDR/data/sparc/SPARC_Table1_parsed.csv")   # salida parse_table1
+TABLE2_FILE = Path("EDR/data/sparc/SPARC_Table2_parsed.csv")   # opcional
+OUT_DIR = Path("EDR/data/sparc/edr_mbar_output")
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-def load_sparc_table(file_path):
-    rows = []
-    with open(file_path, "r") as f:
-        for line in f:
-            if line.strip().startswith("#") or len(line.strip()) == 0:
-                continue
-            parts = re.split(r"\s+", line.strip())
-            rows.append(parts)
-
-    max_cols = max(len(r) for r in rows)
-    clean_rows = [r + [""]*(max_cols - len(r)) for r in rows]
-
-    df = pd.DataFrame(clean_rows)
-
-    # Primera fila = nombres reales
-    df.columns = df.iloc[0]
-    df = df.drop(0).reset_index(drop=True)
-
-    # Convertir numéricas donde se pueda
-    for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="ignore")
-
-    return df
-
-
-def extract_global_barionics(df):
-    possible_Ldisk = ["Ldisk", "L_disk", "LDisk", "DiskLum"]
-    possible_Lbul  = ["Lbul", "L_bul", "LBulge", "BulLum"]
-    possible_Mgas  = ["Mgas", "M_gas", "GasMass", "MHI"]
-
-    def find_column(possibles):
-        for p in possibles:
-            if p in df.columns:
-                return p
-        return None
-
-    col_Ld = find_column(possible_Ldisk)
-    col_Lb = find_column(possible_Lbul)
-    col_Mg = find_column(possible_Mgas)
-
-    return {
-        "L_disk": df[col_Ld].iloc[0] if col_Ld else 0,
-        "L_bul":  df[col_Lb].iloc[0] if col_Lb else 0,
-        "M_gas":  df[col_Mg].iloc[0] if col_Mg else 0
-    }
-
-
-# ------------------------------------------------------------
-# 2. CARGAR RESULTADOS EDR
-# ------------------------------------------------------------
-
-RESULTS_FILE = "EDR/data/sparc/sparc_results.csv"
-SPARC_TABLE_FILE = "EDR/data/sparc/SPARC_Lelli2016c.txt.txt"
-
+# Carga
 df_res = pd.read_csv(RESULTS_FILE)
+df_t1 = pd.read_csv(TABLE1_FILE)
 
-# Mantener solo tus 10 galaxias
-galaxies = df_res["Galaxy"].tolist()
+# Normalizar nombres de galaxias (ID)
+def normalize(name):
+    return str(name).strip()
 
-print("\n=== GALAXIAS A PROCESAR ===")
-print(galaxies)
+df_res['Galaxy_norm'] = df_res['Galaxy'].apply(normalize)
+df_t1['ID_norm'] = df_t1['ID'].apply(normalize)
 
-# Cargar tabla SPARC
-print("\n=== CARGANDO TABLA SPARC ===")
-df_tab = load_sparc_table(SPARC_TABLE_FILE)
-print("Columnas detectadas:", df_tab.columns.tolist())
+# Construir mapeo rápido desde Table1: L_disk (usamos L[3.6] como luminosidad total).
+# Table1 may not explicitly split disk and bulge luminosities; SPARC Table1 has total L[3.6].
+# If you have separate L_disk and L_bul columns, use them. Otherwise, approximate:
+#  - If SBdisk and SBbul etc present, user could compute integrals, but here we try to find columns directly.
+# Buscamos columnas posibles
+Lcol_candidates = [c for c in df_t1.columns if "L[3.6]" in c or "L[3.6]"==c or "L" in c and "3.6" in c]
+if not Lcol_candidates:
+    # posible que en parse resultante la columna sea 'col08' etc; imprimimos y pedimos revisión
+    print("Warning: no se encontró columna obvia L[3.6] en Table1. Columnas disponibles:", df_t1.columns.tolist())
 
-# Extraer L_disk, L_bul, M_gas
-bar = extract_global_barionics(df_tab)
-print("\nDatos bariónicos extraídos:")
-print(bar)
+# Strategy: try several candidate names
+def get_Ldisk_row(row):
+    # Prefer explicit Ldisk if exists, else fall back to L[3.6]
+    for cand in ("Ldisk","L_disk","L[3.6]","L[3.6]", "col08", "col09"):
+        if cand in row.index:
+            return row[cand]
+    # try scanning numeric columns that look like luminosity (heurística: values ~ 0.01-100)
+    for c in row.index:
+        try:
+            v = float(row[c])
+        except:
+            continue
+        if 0.001 < abs(v) < 1e5:
+            # conservative: pick the first plausible numeric that is not distance (we risk mistakes)
+            return v
+    return np.nan
 
+# Build dictionary Galaxy -> (L_disk, L_bul, M_gas)
+table1_map = {}
+for _, r in df_t1.iterrows():
+    gid = r.get("ID") if "ID" in r else r.get("col01", None)
+    if pd.isna(gid):
+        continue
+    Ltot = None
+    for name in ["L[3.6]","L[3.6] ","L[3.6]"]:
+        if name in r:
+            Ltot = r[name]
+    if Ltot is None:
+        # common parse name 'col08' maybe corresponds to L[3.6]
+        if "col08" in r:
+            Ltot = r["col08"]
+    # MHI column: try candidates
+    MHI = None
+    for c in ("MHI","M_HI","col14","MHI "):
+        if c in r:
+            MHI = r[c]
+    # store
+    table1_map[str(gid).strip()] = {"L_3p6": Ltot, "MHI": MHI}
 
-# ------------------------------------------------------------
-# 3. CALCULAR Mbar PARA CADA GALAXIA
-# ------------------------------------------------------------
+# Now compute Mbar for galaxies in results
+out_rows = []
+for _, rr in df_res.iterrows():
+    g = str(rr['Galaxy']).strip()
+    Yd = float(rr['Yd'])
+    Yb = float(rr['Yb']) if 'Yb' in rr and not pd.isna(rr['Yb']) else 0.0
+    # find L_disk, L_bul (we may only have L_total -> as approximation assume L_disk = L_total, L_bul = 0 if missing)
+    t = table1_map.get(g, None)
+    if t is None:
+        # try match by startswith
+        cand = None
+        for k in table1_map:
+            if k.upper().startswith(g.upper()) or g.upper().startswith(k.upper()):
+                cand = table1_map[k]; break
+        t = cand
+    Ldisk = None
+    Lbul = 0.0
+    Mgas = 0.0
+    if t:
+        Ltot = t.get("L_3p6", np.nan)
+        if not pd.isna(Ltot):
+            # units: SPARC L[3.6] is in 10^9 L_sun (check Table1 header). Here we keep that unit but note it.
+            Ldisk = float(Ltot)
+        Mhi = t.get("MHI", np.nan)
+        if not pd.isna(Mhi):
+            Mgas = float(Mhi)  # units per table (likely 10^9 M_sun)
+    # Fallbacks
+    if Ldisk is None or pd.isna(Ldisk):
+        Ldisk = 0.0
 
-Mbar_list = []
-A_list = []
-gal_list = []
+    # Compute Mbar (in the same units as L and Mgas) — user must confirm units; below we assume:
+    #  - L columns are in 1e9 L_sun
+    #  - Mgas (MHI) is in 1e9 M_sun
+    # So Mbar (in 1e9 M_sun) = Yd * Ldisk + Yb * Lbul + Mgas
+    Mbar = Yd * Ldisk + Yb * Lbul + Mgas
 
-for _, row in df_res.iterrows():
-    galaxy = row["Galaxy"]
-    A = row["A"]
-    Yd = row["Yd"]
-    Yb = row["Yb"]
+    out_rows.append({
+        "Galaxy": g,
+        "A": rr.get("A"),
+        "R0": rr.get("R0"),
+        "Yd": Yd,
+        "Yb": Yb,
+        "Ldisk_1e9Lsun": Ldisk,
+        "Lbul_1e9Lsun": Lbul,
+        "Mgas_1e9Msun": Mgas,
+        "Mbar_1e9Msun": Mbar,
+        "chi2_red": rr.get("chi2_red"),
+        "sigma_extra": rr.get("sigma_extra")
+    })
 
-    Ld = bar["L_disk"]
-    Lb = bar["L_bul"]
-    Mg = bar["M_gas"]
+df_out = pd.DataFrame(out_rows)
+df_out = df_out.replace([np.inf, -np.inf], np.nan)
+df_out.to_csv(OUT_DIR / "Mbar_results.csv", index=False)
+print("Saved Mbar table to:", OUT_DIR / "Mbar_results.csv")
 
-    Mbar = Yd * Ld + Yb * Lb + Mg
+# Regression log10(A) vs log10(Mbar)
+# Keep only rows with positive Mbar and positive A
+mask = (df_out["Mbar_1e9Msun"] > 0) & (df_out["A"].notna()) & (df_out["A"]>0)
+df_fit = df_out[mask].copy()
+if df_fit.empty:
+    print("No data available for regression (check Mbar or A values).")
+else:
+    x = np.log10(df_fit["Mbar_1e9Msun"].astype(float))
+    y = np.log10(df_fit["A"].astype(float))
+    slope, intercept, r_value, p_value, std_err = stats.linregress(x,y)
+    print("Regression results: slope, intercept, r, p, std_err:", slope, intercept, r_value, p_value, std_err)
+    # Save regression summary
+    with open(OUT_DIR / "regression_summary.txt", "w") as f:
+        f.write(f"slope {slope}\nintercept {intercept}\nr_value {r_value}\np_value {p_value}\nstd_err {std_err}\nN {len(x)}\n")
 
-    gal_list.append(galaxy)
-    A_list.append(A)
-    Mbar_list.append(Mbar)
+    # Plot scatter + fit
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(6,5))
+    plt.scatter(x, y, s=40)
+    xx = np.linspace(x.min(), x.max(), 100)
+    yy = slope * xx + intercept
+    plt.plot(xx, yy, linestyle="--")
+    plt.xlabel("log10(Mbar) [log10(1e9 Msun)]")
+    plt.ylabel("log10(A)")
+    plt.title("Regression log A vs log Mbar")
+    plt.grid(True)
+    plt.savefig(OUT_DIR / "regression_logA_vs_logMbar.png", dpi=200)
+    plt.close()
+    print("Saved regression plot to:", OUT_DIR / "regression_logA_vs_logMbar.png")
 
-df_out = pd.DataFrame({
-    "Galaxy": gal_list,
-    "A": A_list,
-    "Mbar": Mbar_list
-})
-
-df_out.to_csv("Mbar_results.csv", index=False)
-print("\n=== Mbar_results.csv generado ===")
-
-
-# ------------------------------------------------------------
-# 4. REGRESIÓN log(A) vs log(Mbar)
-# ------------------------------------------------------------
-
-logA = np.log10(df_out["A"])
-logM = np.log10(df_out["Mbar"])
-
-reg = linregress(logM, logA)
-
-slope = reg.slope
-intercept = reg.intercept
-rval = reg.rvalue
-pval = reg.pvalue
-stderr = reg.stderr
-
-print("\n=== REGRESIÓN log(A) vs log(Mbar) ===")
-print(f"Slope:     {slope}")
-print(f"Intercept: {intercept}")
-print(f"R value:   {rval}")
-print(f"P value:   {pval}")
-print(f"Std Err:   {stderr}")
-
-
-# ------------------------------------------------------------
-# 5. GRAFICAR RESULTADO
-# ------------------------------------------------------------
-
-plt.figure(figsize=(9,6))
-plt.scatter(logM, logA, s=90)
-
-xfit = np.linspace(min(logM), max(logM), 100)
-yfit = slope * xfit + intercept
-plt.plot(xfit, yfit, linewidth=2)
-
-plt.xlabel("log(Mbar)")
-plt.ylabel("log(A)")
-plt.title("Relación EDR: log(A) vs log(Mbar)\n(10 galaxias)")
-
-plt.grid(True, alpha=0.3)
-plt.savefig("A_vs_Mbar_regression.png", dpi=300)
-
-print("\n=== Gráfico guardado como A_vs_Mbar_regression.png ===\n")
-print("Proceso completado con éxito 🚀")
+    # Create a combined PNG with histograms (one row: hist(A), hist(Mbar), scatter)
+    fig, axes = plt.subplots(1,3, figsize=(15,4))
+    axes[0].hist(df_out["A"].dropna(), bins=20)
+    axes[0].set_title("Histogram A")
+    axes[1].hist(df_out["Mbar_1e9Msun"].dropna(), bins=20)
+    axes[1].set_title("Histogram Mbar (1e9 Msun)")
+    axes[2].scatter(df_out["Mbar_1e9Msun"], df_out["A"])
+    axes[2].set_xscale('log'); axes[2].set_yscale('log')
+    axes[2].set_xlabel("Mbar (1e9 Msun)")
+    axes[2].set_ylabel("A")
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "global_histograms_and_scatter.png", dpi=200)
+    plt.close()
+    print("Saved combined PNG:", OUT_DIR / "global_histograms_and_scatter.png")
