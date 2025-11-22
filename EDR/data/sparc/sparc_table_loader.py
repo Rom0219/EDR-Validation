@@ -1,82 +1,58 @@
+"""
+Lectura flexible de archivos SPARC (Table1/Table2 en formato txt tal cual se descargan).
+Devuelve DataFrame pandas (o CSV) con detección automática de columnas.
+"""
 import pandas as pd
 import re
+from pathlib import Path
 
-def load_sparc_table(file_path):
+def load_free_table(file_path):
     """
-    Lee el archivo SPARC_Lelli2016c.txt.txt tal cual lo subiste,
-    detecta automáticamente las columnas, limpia comentarios
-    y devuelve un DataFrame listo para usar en los cálculos de Mbar.
+    Lee un txt con columnas separadas por espacios múltiples o tabs.
+    Omite bloques de cabeceras (líneas que empiezan por 'Title:' o 'Byte-by-byte' o 'Table:')
+    Devuelve pandas.DataFrame con la primera fila de datos consistente como header si existe,
+    o devuelve DataFrame con columnas genéricas.
     """
+    p = Path(file_path)
+    text_lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
 
-    rows = []
-    with open(file_path, "r") as f:
-        for line in f:
-            # Saltar comentarios y líneas vacías
-            if line.strip().startswith("#") or len(line.strip()) == 0:
-                continue
+    # Eliminar encabezados largos: buscamos la primera línea que parezca un dato (ID o nombre de galaxia)
+    data_lines = []
+    for ln in text_lines:
+        s = ln.strip()
+        if not s:
+            continue
+        # salto comentarios
+        if s.startswith('#'):
+            continue
+        # si la línea empieza por una etiqueta como "CamB" o "NGC" o "F" seguida de números -> línea de datos
+        if re.match(r"^[A-Za-z0-9\-\_\.]+\s+[-+]?\d", s):
+            data_lines.append(s)
+        else:
+            # también incluir si la línea parece contener columnas separadas por espacios y la primera "palabra" no es texto largo explicativo
+            # para Table1 (hay algunas líneas con preámbulo - ignoramos)
+            continue
 
-            # Separación por espacios múltiples
-            parts = re.split(r"\s+", line.strip())
-            rows.append(parts)
+    if not data_lines:
+        raise ValueError(f"No se detectaron líneas de datos en {file_path} - revisa el archivo.")
 
-    # Detectar automáticamente cuántas columnas tiene
-    max_cols = max(len(r) for r in rows)
+    # split y normalizar
+    rows = [re.split(r"\s+", dl) for dl in data_lines]
+    maxcols = max(len(r) for r in rows)
+    norm = [r + [""]*(maxcols - len(r)) for r in rows]
 
-    # Normalizar filas (rellenar)
-    clean_rows = [r + [""]*(max_cols - len(r)) for r in rows]
-
-    # Crear dataframe genérico
-    df = pd.DataFrame(clean_rows)
-
-    # La primera fila tiene los nombres reales
-    df.columns = df.iloc[0]
-    df = df.drop(0).reset_index(drop=True)
-
-    # Convertir numéricas donde se pueda
-    for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="ignore")
+    # construir dataframe con header generico
+    headers = ["col{:02d}".format(i+1) for i in range(maxcols)]
+    df = pd.DataFrame(norm, columns=headers)
 
     return df
 
-
-def extract_global_barionics(df):
-    """
-    Extrae (L_disk, L_bul, M_gas) usando los nombres estándar de SPARC.
-    No todas las galaxias tienen bulbo → se maneja automáticamente.
-    """
-
-    results = {}
-
-    # SPARC typical columns
-    possible_Ldisk = ["Ldisk", "L_disk", "LDisk", "DiskLum"]
-    possible_Lbul = ["Lbul", "L_bul", "LBulge", "BulLum"]
-    possible_Mgas = ["Mgas", "M_gas", "GasMass", "MHI"]
-
-    def find_column(possibles):
-        for p in possibles:
-            if p in df.columns:
-                return p
-        return None
-
-    col_Ld = find_column(possible_Ldisk)
-    col_Lb = find_column(possible_Lbul)
-    col_Mg = find_column(possible_Mgas)
-
-    results["L_disk"] = df[col_Ld].iloc[0] if col_Ld else 0
-    results["L_bul"] = df[col_Lb].iloc[0] if col_Lb else 0
-    results["M_gas"] = df[col_Mg].iloc[0] if col_Mg else 0
-
-    return results
-
-
 if __name__ == "__main__":
-    file_path = "EDR/data/sparc/SPARC_Lelli2016c.txt.txt"
-
-    print("\n=== CARGANDO TABLA SPARC ===\n")
-
-    df = load_sparc_table(file_path)
-    print("Columnas detectadas:\n", df.columns)
-
-    bar = extract_global_barionics(df)
-    print("\nValores extraídos:")
-    print(bar)
+    import sys
+    fp = sys.argv[1] if len(sys.argv) > 1 else "EDR/data/sparc/SPARC_Lelli2016c.txt.txt"
+    df = load_free_table(fp)
+    print("Preview:")
+    print(df.head())
+    out_csv = Path(fp).with_suffix(".parsed.csv")
+    df.to_csv(out_csv, index=False)
+    print("Saved parsed CSV to:", out_csv)
