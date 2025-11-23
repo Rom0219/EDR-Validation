@@ -22,9 +22,10 @@ from scipy import stats # Necesario para BTFR y regresiones
 # 1) CONFIGURACIÓN Y CONSTANTES
 # -------------------------
 # Nombres de archivos de datos:
-# ¡CORRECCIÓN FINAL! Usando los nombres exactos que subiste:
-TABLE1_FILENAME = "SPARC_Lelli2016_Table1.txt" 
-TABLE2_FILENAME = "SPARC_Lelli2016_Table2.txt"
+# CORRECCIÓN DE RUTA: Añadimos "../" para que el script pueda encontrar los archivos
+# un nivel más arriba, donde has confirmado que están ubicados.
+TABLE1_FILENAME = "../SPARC_Lelli2016_Table1.txt" 
+TABLE2_FILENAME = "../SPARC_Lelli2016_Table2.txt"
 
 # Ruta de referencia (mencionada en sparc_fit.py)
 REFERENCE_PDF = "/mnt/data/FORMULAS_V2.pdf"
@@ -109,7 +110,8 @@ def parse_table2(txt_path):
     if maxcols > len(cols_base):
         cols = cols_base + [f"extra_{i}" for i in range(len(cols_base), maxcols)]
 
-    norm = [r + [""]*(len(cols)-len(r)) for r in data_lines]
+    # El bug de 'rows' debe ser 'data_lines' aquí
+    norm = [r + [""]*(len(cols)-len(r)) for r in data_lines] 
     df = pd.DataFrame(norm, columns=cols)
     
     # Convertir numéricas
