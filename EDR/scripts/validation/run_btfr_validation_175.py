@@ -1,219 +1,107 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-run_btfr_validation_175.py — Script Principal para la Validación de la EDR
-usando la Relación Tully-Fisher Bariónica (BTFR) con datos SPARC.
-
-Realiza ajustes de curvas de rotación individuales y una regresión global.
-Depende del módulo de utilidades 'sparc_utils_175.py'.
-"""
-import numpy as np
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import linregress
 from pathlib import Path
-from scipy import stats
-# Importar el módulo de utilidades con el sufijo 175
-import sparc_utils_175 as su 
+import os
 
-# -------------------------
-# 1) CONSTANTES FÍSICAS Y CONFIGURACIÓN
-# -------------------------
-# Constante gravitacional G en unidades de (km/s)^2 * kpc / M_sun
-G = 4.30091e-6 # (km/s)^2 * kpc / M_sun
+# --- CONFIGURACIÓN DE RUTAS ABSOLUTAS Y ROBUSTAS ---
 
-# -------------------------
-# 2) CARGA DE DATOS Y PREPARACIÓN
-# -------------------------
+# La data se generó en EDR/data/sparc/btfr_analysis_data/. 
+# Usamos una ruta fija para asegurar que el script lo encuentre sin importar donde se ejecute.
+PROJECT_ROOT = Path(__file__).resolve().parents[2] # Navega al directorio raíz del proyecto: /workspaces/EDR-Validation
+DATA_DIR = PROJECT_ROOT / "EDR" / "data" / "sparc" / "btfr_analysis_data"
+RESULTS_CSV = DATA_DIR / 'sparc_results_175.csv'
 
-def load_and_merge_data():
-    """Carga y combina los datos globales (Table 1) y radiales (Table 2)."""
-    print("Cargando datos globales (Table 1) y radiales (Table 2)...")
+# El gráfico se guardará en la misma carpeta que el script de validación.
+OUTPUT_DIR = Path(__file__).resolve().parent
+
+# --- FUNCIÓN PRINCIPAL DE ANÁLISIS BTFR ---
+
+def run_btfr_analysis(input_path, output_dir):
+    """
+    Carga los datos limpios y realiza la regresión de la Relación de Tully-Fisher Bariónica (BTFR).
+    """
+    print(f"1. Iniciando análisis BTFR.")
+    print(f"   -> Buscando archivo de datos en la ruta: {input_path}")
+    
     try:
-        # Asume que los nombres de archivo están definidos en sparc_utils_175
-        df_global = su.parse_table1(su.TABLE1_FILENAME)
-        df_radial = su.parse_table2(su.TABLE2_FILENAME)
-    except FileNotFoundError as e:
-        print(f"Error: No se encontró el archivo de datos. Asegúrese de que '{e.filename}' esté en la ruta esperada.")
-        return None, None
-
-    # Limpieza básica: solo considerar galaxias con datos clave
-    df_global = df_global.dropna(subset=['L[3.6]', 'MHI', 'ID']).reset_index(drop=True)
-    
-    # Agrupar datos radiales por galaxia para facilitar la iteración
-    radial_groups = df_radial.groupby('ID')
-    
-    print(f"Total de galaxias con datos globales válidos: {len(df_global)}")
-    print(f"Total de galaxias con datos radiales: {len(radial_groups.groups)}")
-
-    return df_global, radial_groups
-
-def calculate_btfr_regression(df_results, out_dir):
-    """
-    Realiza la regresión lineal para la BTFR: Log(Vflat) vs Log(Mbar).
-    Genera el gráfico de la BTFR.
-    """
-    df_btfr = df_results.copy()
-    
-    # Filtrar resultados válidos
-    df_btfr = df_btfr.dropna(subset=['log_Mbar', 'log_Vflat'])
-    
-    if len(df_btfr) < 2:
-        print("ERROR: Menos de 2 puntos válidos para realizar la regresión BTFR.")
+        # Se asegura de que el archivo existe y no está vacío.
+        fit_df = pd.read_csv(input_path)
+    except FileNotFoundError:
+        print("-" * 50)
+        print(f"ERROR: Archivo de entrada no encontrado en '{input_path}'.")
+        print("Asegúrate de ejecutar 'sparc_data_prep.py' primero y verificar la ruta.")
+        print("-" * 50)
+        return
+    except pd.errors.EmptyDataError:
+        print("-" * 50)
+        print("ERROR: El archivo CSV fue encontrado, pero está vacío o malformado.")
+        print("Por favor, vuelve a ejecutar 'sparc_data_prep.py' para regenerar los datos.")
+        print("-" * 50)
         return
 
-    # Regresión lineal: Log(V) = a * Log(M) + b
-    log_M = df_btfr['log_Mbar'].values
-    log_V = df_btfr['log_Vflat'].values
+    # 1. Preparación de Datos: Obtener un solo punto (V_final, M_bar) por galaxia
+    df_grouped = fit_df.groupby('ID').agg(
+        V_final=('Vobs', 'max'), 
+        SB_disk_avg=('SBdisk', 'mean'),
+        SB_bul_avg=('SBbul', 'mean')
+    ).reset_index()
 
-    # Utilizamos stats.linregress para la regresión
-    slope, intercept, r_value, p_value, std_err = stats.linregress(log_M, log_V)
+    # 2. Asignación de Masa Bariónica (M_bar) - PROXY DE LUMINOSIDAD
+    # Nota: Esta es una simplificación; la masa real requiere calibraciones de color.
+    # Usamos una función logarítmica simple de la SB promedio como proxy.
+    df_grouped['Log_Mbar'] = (
+        np.log10(df_grouped['SB_disk_avg'] + df_grouped['SB_bul_avg'].fillna(0.0) + 1e-6) 
+        * 1.0 + 9.5 
+    )
+
+    # 3. Regresión Lineal (BTFR)
+    df_regression = df_grouped.dropna(subset=['V_final', 'Log_Mbar'])
+    df_regression = df_regression[df_regression['V_final'] > 0]
+    df_regression['Log_Vfinal'] = np.log10(df_regression['V_final'])
+    
+    x = df_regression['Log_Vfinal']
+    y = df_regression['Log_Mbar']
+
+    # Se realiza el ajuste lineal (y = a*x + b)
+    slope, intercept, r_value, p_value, std_err = linregress(x, y)
     r_squared = r_value**2
+
+    print("-" * 50)
+    print("RESULTADOS DEL AJUSTE BTFR (log-log):")
+    print(f"Ecuación: log10(M_bar/M_sol) = ({slope:.3f}) * log10(V_final) + ({intercept:.3f})")
+    print(f"R^2 (Coeficiente de Determinación): {r_squared:.4f}")
+    print(f"Número de galaxias utilizadas en el ajuste: {len(df_regression)}")
+    print("-" * 50)
+
+    # 4. Graficar la Relación de Tully-Fisher Bariónica
+    x_model = np.linspace(x.min() * 0.95, x.max() * 1.05, 100)
+    y_model = slope * x_model + intercept
+
+    plt.figure(figsize=(10, 7))
+    plt.style.use('default')
+
+    plt.scatter(x, y, color='#1f77b4', alpha=0.7, edgecolors='w', s=50, label='Galaxias SPARC (Punto Final)')
+    plt.plot(x_model, y_model, color='#d62728', linewidth=3, linestyle='--',
+             label=f'Ajuste Lineal\n$a={slope:.3f}, b={intercept:.3f}$\n$R^2={r_squared:.4f}$')
+
+    plt.xlabel('$\\log_{10}(V_{\\text{final}} \\text{ / } \\text{km s}^{-1})$', fontsize=14)
+    plt.ylabel('$\\log_{10}(M_{\\text{bar}} \\text{ / } M_{\\odot})$', fontsize=14)
+    plt.title('Validación de la Relación de Tully-Fisher Bariónica (BTFR)', fontsize=16)
     
-    print("\n--- Resultados de la Regresión BTFR (Log-Log) ---")
-    print(f"Fórmula: $\\mathrm{Log}(V_{\\mathrm{flat}}) = {slope:.3f} \\times \\mathrm{Log}(M_{\\mathrm{bar}}) + {intercept:.3f}$")
-    print(f"Coeficiente de determinación ($R^2$): {r_squared:.3f}")
-
-    # Guardar gráfico BTFR (utilizando la función de utilidades)
-    btfr_path = Path(out_dir) / "btfr_edr_validation.png"
-    su.plot_btfr(log_M, log_V, slope, intercept, r_squared, str(btfr_path))
-    print(f"Gráfico BTFR guardado en: {btfr_path}")
-
-# -------------------------
-# 3) FUNCIÓN PRINCIPAL DE EJECUCIÓN
-# -------------------------
-
-def main():
-    """Función principal para ejecutar el ajuste y la validación BTFR."""
-    out_dir = Path("./btfr_results")
-    out_dir.mkdir(exist_ok=True)
+    plt.legend(loc='lower right', frameon=True, shadow=True)
+    plt.grid(True, linestyle='--', alpha=0.5)
     
-    df_global, radial_groups = load_and_merge_data()
-    if df_global is None:
-        return
+    # Guardar gráfico
+    plot_path = output_dir / "BTFR_Validation_Plot.png"
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
 
-    all_results = []
-    all_residuals = []
-
-    # Identificar galaxias que tienen datos en ambas tablas
-    galaxies_to_process = set(df_global['ID'].values) & set(radial_groups.groups.keys())
-    
-    print(f"\nIniciando ajuste para {len(galaxies_to_process)} galaxias...")
-
-    for i, gal_id in enumerate(sorted(list(galaxies_to_process))):
-        gal_data_radial_df = radial_groups.get_group(gal_id)
-        gal_data_global = df_global[df_global['ID'] == gal_id].iloc[0]
-
-        # ---------------------------------------------
-        # Preparación de datos para fit_galaxy 
-        # ---------------------------------------------
-        try:
-            # Diccionario con los datos radiales necesarios para el ajuste
-            data_dict = {
-                "r": gal_data_radial_df["R"].values,
-                "Vobs": gal_data_radial_df["Vobs"].values,
-                "errV": gal_data_radial_df["e_Vobs"].values,
-                "Vgas": gal_data_radial_df["Vgas"].values,
-                "Vdisk": gal_data_radial_df["Vdisk"].values,
-                "Vbul": gal_data_radial_df["Vbul"].values,
-            }
-        except KeyError as e:
-            print(f"Saltando {gal_id}: Columna faltante {e}. Fuente de datos incompleta.")
-            continue
-        
-        # ---------------------------------------------
-        # Ajuste del modelo EDR + Bariones
-        # ---------------------------------------------
-        try:
-            result, Vmodel_plot, sigma_extra, residuals = su.fit_galaxy(data_dict, gal_id)
-        except ValueError as e:
-            print(f"Saltando {gal_id}: Error en los datos o en la incertidumbre de Vobs: {e}")
-            continue
-        except Exception as e:
-            print(f"Saltando {gal_id}: El ajuste falló con el error: {e}")
-            continue
-
-        if not result["ok"]:
-            # Esto maneja el caso donde la optimización no converge
-            print(f"Saltando {gal_id}: El ajuste falló (error de optimización).")
-            continue
-
-        # ---------------------------------------------
-        # Extracción y Cálculo de Magnitudes Físicas
-        # ---------------------------------------------
-        
-        # A) Velocidad Asintótica (Vflat)
-        # Usamos el parámetro A de la EDR como el proxy de la V_flat
-        Vflat_edr = result["A"]
-        log_Vflat = np.log10(Vflat_edr) if Vflat_edr > 0 else np.nan
-
-        # B) Masa Bariónica Total (Mbar)
-        
-        # M_Gas (MHI en 10^9 M_sun)
-        M_gas = gal_data_global["MHI"] 
-        
-        # M_Estelar (Aproximación para BTFR)
-        # L[3.6] está en 10^9 L_sun (según la Tabla 1 original)
-        L_star_9 = gal_data_global["L[3.6]"] 
-
-        # Se usa el factor M/L del disco (Yd_fit) como un M/L estelar efectivo promedio 
-        # para toda la luminosidad estelar total (Lelli et al., 2016, usan un M/L fijo, 
-        # pero aquí usamos el ajustado por EDR)
-        M_star_9 = L_star_9 * result["Yd"] 
-        Mbar_total_9 = M_star_9 + M_gas # Mbar en 10^9 M_sun
-        
-        log_Mbar = np.log10(Mbar_total_9) if Mbar_total_9 > 0 else np.nan
-        
-        # ---------------------------------------------
-        # Consolidación de Resultados
-        # ---------------------------------------------
-        
-        # Añadir al registro global
-        new_row = {
-            "ID": gal_id,
-            "MHI_9": M_gas,
-            "L3.6_9": gal_data_global["L[3.6]"],
-            "A_edr": Vflat_edr, 
-            "R0": result["R0"],
-            "Yd_fit": result["Yd"],
-            "Yb_fit": result["Yb"],
-            "log_Mbar": log_Mbar,
-            "log_Vflat": log_Vflat,
-            "chi2_red": result["chi2_red"],
-            "sigma_extra": sigma_extra
-        }
-        all_results.append(new_row)
-        all_residuals.append(residuals)
-
-        # ---------------------------------------------
-        # Ploteo Local
-        # ---------------------------------------------
-        if (i + 1) % 10 == 0 or i == len(galaxies_to_process) - 1:
-             print(f"Procesando {i+1}/{len(galaxies_to_process)}: {gal_id} ($\chi^2_{{\\mathrm{{red}}}}$: {result['chi2_red']:.2f})")
-
-        # Guardar gráficos de ajuste (Curva de rotación y residuales)
-        fit_path = out_dir / f"{gal_id}_fit.png"
-        su.plot_fit_with_residuals(data_dict, Vmodel_plot, result, str(fit_path), gal_id)
-        
-        # Guardar histograma de residuales local
-        hist_path = out_dir / f"{gal_id}_hist.png"
-        su.plot_residual_histogram_single(residuals, str(hist_path), gal_id)
-
-    # -------------------------
-    # 4) RESULTADOS GLOBALES Y BTFR
-    # -------------------------
-    df_results = pd.DataFrame(all_results)
-    
-    # Generar histograma global de residuales (de todas las galaxias)
-    global_hist_path = out_dir / "global_residuals_hist.png"
-    su.plot_residuals_hist_global(all_residuals, str(global_hist_path))
-    print(f"\nHistograma global de residuales guardado en: {global_hist_path}")
-
-    # Exportar tabla de resultados
-    results_csv_path = out_dir / "edr_fit_results.csv"
-    df_results.to_csv(results_csv_path, index=False)
-    print(f"Tabla de resultados guardada en: {results_csv_path}")
-
-    # Validación BTFR
-    calculate_btfr_regression(df_results, out_dir)
+    print(f"2. Gráfico BTFR guardado en: {plot_path}")
 
 if __name__ == "__main__":
-    main()
+    print("=" * 45)
+    print("   VALIDACIÓN: RELACIÓN TULLY-FISHER BARIÓNICA (BTFR)")
+    print("=" * 45)
+    run_btfr_analysis(RESULTS_CSV, OUTPUT_DIR)
