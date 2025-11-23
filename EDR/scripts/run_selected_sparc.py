@@ -1,103 +1,114 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-run_selected_sparc.py — pipeline final para SPARC + EDR (Validación Local)
-
-- Ejecuta fit en la lista GALAXIES usando archivos *_rotmod.dat (derivados de Table 2)
+run_selected_sparc.py — Script Principal de Fitting EDR + SPARC
+--------------------------------------------------------------
+Ejecuta el ajuste del modelo EDR + Bariones para cada galaxia
+en la lista usando las utilidades de sparc_utils.py.
 """
 import os
-import csv
 import numpy as np
-from sparc_utils import (
-    load_rotmod_generic, fit_galaxy, plot_fit_with_residuals, 
-    plot_residual_histogram_single, plot_residuals_hist_global
-)
+import pandas as pd
+from pathlib import Path
+from datetime import datetime
 
-# --- CONFIGURACIÓN DE RUTAS ---
+# IMPORTAMOS TODAS LAS FUNCIONES DESDE LA LIBRERÍA CONSOLIDADA
+from sparc_utils import load_rotmod_generic, fit_galaxy, plot_fit_with_residuals, plot_residual_histogram_single, plot_residuals_hist_global
+
+# --- 1. CONFIGURACIÓN DE RUTAS Y GALAXIAS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Ajustar rutas relativas al directorio 'scripts'
-DATA_DIR = os.path.join(BASE_DIR, "..", "data", "sparc", "datafiles") 
-RESULTS_DIR = os.path.join(BASE_DIR, "..", "results")
-PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
-HIST_DIR = os.path.join(RESULTS_DIR, "histograms")
-RESID_DIR = os.path.join(RESULTS_DIR, "residuals")
-GLOBAL_DIR = os.path.join(RESULTS_DIR, "summary_plots")
+# Asumimos que este script está en scripts/, subimos un nivel a la raíz del proyecto
+ROOT_DIR = os.path.join(BASE_DIR, "..") 
 
-# Crear directorios de salida
-os.makedirs(DATA_DIR, exist_ok=True) 
+# Rutas de datos y resultados
+DATA_DIR = os.path.join(ROOT_DIR, "EDR", "data", "sparc", "rotmod_data") # Carpeta donde están los archivos *_rotmod.dat
+RESULTS_DIR = os.path.join(ROOT_DIR, "results")
+PLOTS_DIR = os.path.join(RESULTS_DIR, "fits_plots")
+RESIDUALS_DIR = os.path.join(RESULTS_DIR, "residuals")
+
+# Crear directorios si no existen
+os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PLOTS_DIR, exist_ok=True)
-os.makedirs(HIST_DIR, exist_ok=True)
-os.makedirs(RESID_DIR, exist_ok=True)
-os.makedirs(GLOBAL_DIR, exist_ok=True)
+os.makedirs(RESIDUALS_DIR, exist_ok=True)
 
-# Lista de galaxias
-GALAXIES = ["NGC3198", "NGC2403", "NGC2841", "NGC6503", "NGC3521", "DDO154", "NGC3741", "IC2574", "NGC3109", "NGC2976"]
+# Lista de las primeras 10 galaxias (tu muestra de prueba)
+GALAXIES_SAMPLE = [
+    "NGC3198", "NGC2403", "NGC2841", "NGC6503",
+    "NGC3521", "DDO154", "NGC3741", "IC2574",
+    "NGC3109", "NGC2976"
+]
 
-OUT_CSV = os.path.join(RESULTS_DIR, "sparc_results.csv")
-SUMMARY_CSV = os.path.join(RESULTS_DIR, "sparc_run_summary.csv")
-FIELDNAMES = ["Galaxy","A","R0","Yd","Yb","chi2","chi2_red","sigma_extra","fit_ok","mode","Ndata","Ndof"]
+# Archivo de salida principal
+RESULTS_CSV = os.path.join(RESULTS_DIR, "sparc_results.csv")
 
-rows = []
-residuals_for_global = []
+# --- 2. PIPELINE DE EJECUCIÓN ---
+all_results = []
+all_residuals = []
 
-print("=============================================")
-print("     PROCESO SPARC + EDR — VALIDACIÓN LOCAL")
-print("=============================================\n")
+print(f"--- INICIANDO FIT DE {len(GALAXIES_SAMPLE)} GALAXIAS ---")
 
-for g in GALAXIES:
-    fpath = os.path.join(DATA_DIR, f"{g}_rotmod.dat")
+for i, galaxy_name in enumerate(GALAXIES_SAMPLE):
+    print(f"\n[{i+1}/{len(GALAXIES_SAMPLE)}] Procesando {galaxy_name}...")
     
-    if not os.path.exists(fpath):
-        print(f"[SKIP] {g}: Archivo {fpath} no encontrado.")
+    rotmod_path = Path(DATA_DIR) / f"{galaxy_name}_rotmod.dat"
+    
+    if not rotmod_path.exists():
+        print(f"[SKIP] Archivo de datos no encontrado para {galaxy_name} en {rotmod_path}")
         continue
 
     try:
-        data = load_rotmod_generic(fpath)
+        # A. Cargar datos
+        data = load_rotmod_generic(rotmod_path)
     except Exception as e:
-        print(f"[FAIL] {g}: lectura -> {e}")
-        # Lógica para registrar fallos
+        print(f"[FAIL] Error al cargar {galaxy_name}: {e}")
         continue
 
-    result, Vmodel_plot, sigma_extra, residuals = fit_galaxy(data, galaxy_name=g)
+    # B. Ejecutar ajuste
+    result, Vmodel_plot, sigma_extra, residuals = fit_galaxy(data, galaxy_name=galaxy_name)
 
-    if (not result) or (not result.get("ok", False)):
-        print(f"[FAIL] {g}: fit -> {result.get('error','unknown')}")
-        continue
+    # C. Procesar resultados
+    if result["ok"]:
+        print(f"[OK] Fit exitoso. Chi2_red: {result['chi2_red']:.3f}, Sigma_extra: {sigma_extra:.3f} km/s")
+        
+        # Guardar parámetros en el resultado
+        row = {"Galaxy": galaxy_name, "N_points": len(data["r"]), "sigma_extra": sigma_extra}
+        row.update({k: v for k, v in result.items() if k not in ["ok", "r_plot", "mode"]})
+        
+        all_results.append(row)
+        all_residuals.append(residuals)
+        
+        # D. Generar plots (Usando las utilidades de sparc_utils)
+        plot_fname = os.path.join(PLOTS_DIR, f"{galaxy_name}_fit.png")
+        plot_fit_with_residuals(data, Vmodel_plot, result, plot_fname, galaxy_name)
+        
+        hist_fname = os.path.join(PLOTS_DIR, f"{galaxy_name}_hist.png")
+        plot_residual_histogram_single(residuals, hist_fname, galaxy_name)
+        
+        # E. Guardar residuales por separado para análisis posterior
+        np.save(os.path.join(RESIDUALS_DIR, f"{galaxy_name}_residuals.npy"), residuals)
 
-    # Guardar resultados
-    resid_file = os.path.join(RESID_DIR, f"{g}_residuals.npy")
-    np.save(resid_file, residuals)
-    residuals_for_global.append(residuals)
+    else:
+        print(f"[FAIL] El fit falló para {galaxy_name}. Error: {result['error']}")
+
+
+# --- 3. RESUMEN Y FINALIZACIÓN ---
+if all_results:
+    final_df = pd.DataFrame(all_results)
     
-    out_plot = os.path.join(PLOTS_DIR, f"{g}.png")
-    plot_fit_with_residuals(data, Vmodel_plot, result, out_plot, galaxy_name=g)
+    # 3.1. Guardar resultados globales
+    final_df.to_csv(RESULTS_CSV, index=False)
+    print(f"\n--- ÉXITO ---")
+    print(f"Resultados de {len(final_df)} galaxias guardados en: {RESULTS_CSV}")
+    
+    # 3.2. Generar histograma global de residuales
+    global_hist_fname = os.path.join(PLOTS_DIR, "global_residuals_hist.png")
+    plot_residuals_hist_global(all_residuals, global_hist_fname)
+    print(f"Histograma global de residuales guardado en: {global_hist_fname}")
 
-    out_hist = os.path.join(HIST_DIR, f"{g}_hist.png")
-    plot_residual_histogram_single(residuals, out_hist, galaxy_name=g)
+    # 3.3. Mostrar resumen
+    print("\nResumen de parámetros promedio:")
+    print(final_df[["A", "R0", "Yd", "Yb", "chi2_red"]].mean().to_string())
 
-    Ndata = data.get("N_valid", 0)
-    Ndof = max(Ndata - 4, 0)
-
-    rows.append({"Galaxy": g, "A": result["A"], "R0": result["R0"], "Yd": result["Yd"], "Yb": result["Yb"],
-                 "chi2": result["chi2"], "chi2_red": result["chi2_red"], "sigma_extra": sigma_extra,
-                 "fit_ok": True, "mode": result["mode"], "Ndata": Ndata, "Ndof": Ndof})
-
-    print(f"[OK] Ajuste completo para {g} (chi2_red={result['chi2_red']:.2f})")
-
-# Escribir CSV final y resumen
-with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
-    w = csv.DictWriter(f, fieldnames=FIELDNAMES)
-    w.writeheader()
-    w.writerows([r for r in rows if r["fit_ok"]])
-
-with open(SUMMARY_CSV, "w", newline="", encoding="utf-8") as f:
-    w = csv.DictWriter(f, fieldnames=FIELDNAMES)
-    w.writeheader()
-    w.writerows(rows)
-
-# Histograma global
-if residuals_for_global:
-    global_hist_path = os.path.join(GLOBAL_DIR, "global_residuals_hist.png")
-    plot_residuals_hist_global(residuals_for_global, fname=global_hist_path, figsize=(15, 12))
-
-print("\n>>> PROCESO COMPLETADO <<<")
+else:
+    print("\n--- FALLO ---")
+    print("No se pudieron procesar galaxias exitosamente.")
