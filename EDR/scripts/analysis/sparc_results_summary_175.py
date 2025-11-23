@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-sparc_results_summary.py — Resumen y visualización de los parámetros
+sparc_results_summary_175.py — Resumen y visualización de los parámetros
 de ajuste EDR (A, R0, Yd_fit) y los diagnósticos de calidad (chi2_red, sigma_extra)
 para las 175 galaxias SPARC.
+
+Este script es la continuación de 'run_btfr_validation_175.py' y 'residuals_analysis_175.py'.
 """
 import numpy as np
 import pandas as pd
@@ -21,7 +23,7 @@ plt.rcParams['font.size'] = 12
 # -------------------------
 RESULTS_DIR = Path("./btfr_results")
 RESULTS_FILENAME = RESULTS_DIR / "edr_fit_results.csv"
-OUTPUT_DIR = RESULTS_DIR / "summary_plots"
+OUTPUT_DIR = RESULTS_DIR / "summary_plots_175"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 def load_fit_results():
@@ -170,7 +172,7 @@ def main():
     # Paso 4: Correlaciones
     plot_correlations(df_clean)
 
-    print("\nResumen y visualizaciones completadas. Revise la carpeta 'btfr_results/summary_plots'.")
+    print("\nResumen y visualizaciones completadas. Revise la carpeta 'btfr_results/summary_plots_175'.")
 
 if __name__ == "__main__":
     main()
