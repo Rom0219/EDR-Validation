@@ -196,11 +196,11 @@ def plot_fit(df_rc, R_data_obs, V_total_func, popt, chi2_red):
 
     # 3. Velocidad Total (Modelo)
     plt.plot(R_model, V_model_total, linestyle='-', color='blue', linewidth=2, 
-                 label=f'Modelo EDR Total ($\chi^2_\\nu={chi2_red:.2f}$)')
+             label=f'Modelo EDR Total ($\chi^2_\\nu={chi2_red:.2f}$)')
     
     # 4. Observaciones
     plt.errorbar(R_obs, Vobs, yerr=e_Vobs, fmt='o', color='black', 
-                     markersize=4, capsize=3, label='Velocidad Observada ($V_{obs}$)')
+             markersize=4, capsize=3, label='Velocidad Observada ($V_{obs}$)')
 
     plt.xlabel('Radio (kpc)')
     plt.ylabel('Velocidad Circular (km/s)')
