@@ -21,7 +21,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.join(BASE_DIR, "..") 
 
 # Rutas de datos y resultados
-DATA_DIR = os.path.join(ROOT_DIR, "EDR", "data", "sparc", "rotmod_data") # Carpeta donde están los archivos *_rotmod.dat
+# >>> RUTA CORREGIDA AQUÍ <<<
+DATA_DIR = os.path.join(ROOT_DIR, "EDR", "data", "sparc", "datafiles") # Carpeta donde están los archivos *_rotmod.dat
 RESULTS_DIR = os.path.join(ROOT_DIR, "results")
 PLOTS_DIR = os.path.join(RESULTS_DIR, "fits_plots")
 RESIDUALS_DIR = os.path.join(RESULTS_DIR, "residuals")
