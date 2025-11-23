@@ -17,12 +17,12 @@ from sparc_utils import load_rotmod_generic, fit_galaxy, plot_fit_with_residuals
 
 # --- 1. CONFIGURACIÓN DE RUTAS Y GALAXIAS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Asumimos que este script está en scripts/, subimos un nivel a la raíz del proyecto
+# Si el script está en scripts/, subimos un nivel a la carpeta EDR/
 ROOT_DIR = os.path.join(BASE_DIR, "..") 
 
 # Rutas de datos y resultados
-# >>> RUTA CORREGIDA AQUÍ <<<
-DATA_DIR = os.path.join(ROOT_DIR, "EDR", "data", "sparc", "datafiles") # Carpeta donde están los archivos *_rotmod.dat
+# >>> RUTA DE DATOS CORREGIDA (Eliminamos el 'EDR' redundante) <<<
+DATA_DIR = os.path.join(ROOT_DIR, "data", "sparc", "datafiles") # Carpeta donde están los archivos *_rotmod.dat
 RESULTS_DIR = os.path.join(ROOT_DIR, "results")
 PLOTS_DIR = os.path.join(RESULTS_DIR, "fits_plots")
 RESIDUALS_DIR = os.path.join(RESULTS_DIR, "residuals")
@@ -34,9 +34,9 @@ os.makedirs(RESIDUALS_DIR, exist_ok=True)
 
 # Lista de las primeras 10 galaxias (tu muestra de prueba)
 GALAXIES_SAMPLE = [
-    "NGC3198_rotmod.dat", "NGC2403_rotmod.dat", "NGC2841_rotmod.dat", "NGC6503_rotmod.dat",
-    "NGC3521_rotmod.dat", "DDO154_rotmod.dat", "NGC3741_rotmod.dat", "IC2574_rotmod.dat",
-    "NGC3109_rotmod.dat", "NGC2976_rotmod.dat"
+    "NGC3198", "NGC2403", "NGC2841", "NGC6503",
+    "NGC3521", "DDO154", "NGC3741", "IC2574",
+    "NGC3109", "NGC2976"
 ]
 
 # Archivo de salida principal
