@@ -1,92 +1,138 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-run_btfr_validation.py — Pipeline de Validación Global (BTFR)
-
-- Carga la Tabla 1 de SPARC (Datos Globales)
-- Realiza la regresión log(Vflat) vs log(Mbar) para validar la Relación Tully-Fisher Bariónica (BTFR)
+run_btfr_validation.py — Validación de la Relación Tully-Fisher Bariónica (BTFR)
+-------------------------------------------------------------------------------
+Usa los parámetros del fit (Yd, Yb) junto con los datos de luminosidad (L[3.6])
+para calcular la masa bariónica y verificar la BTFR.
 """
+import sys
 import os
 import pandas as pd
 import numpy as np
 from scipy import stats
-from sparc_utils import parse_table1, plot_btfr, TABLE1_FILENAME
 
-# ---- CONFIG & INPUTS ----
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "..", "data", "sparc")
+# --- INICIO DEL FIX PARA EL ERROR ModuleNotFoundError: 'sparc_utils' ---
+# El script está en 'validation/', necesitamos acceder a 'scripts/'
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.join(current_dir, "..")
+# Añadir la carpeta 'scripts/' al path de Python para que la importación funcione
+sys.path.append(parent_dir)
+# --- FIN DEL FIX ---
+
+# Ahora importamos las funciones de utilidad
+try:
+    from sparc_utils import parse_table1, plot_btfr, TABLE1_FILENAME
+except ImportError:
+    print("[ERROR] El fix de ruta falló o sparc_utils.py no está en EDR/scripts/.")
+    exit()
+
+# --- CONFIGURACIÓN DE RUTAS ---
+# Subimos a la raíz del proyecto (EDR/)
+ROOT_DIR = os.path.join(parent_dir, "..")
+
+# Rutas a los datos necesarios
+RESULTS_CSV = os.path.join(ROOT_DIR, "results", "sparc_results.csv")
+DATA_DIR = os.path.join(ROOT_DIR, "data", "sparc", "datafiles") # Ruta a la Tabla 1
 TABLE1_PATH = os.path.join(DATA_DIR, TABLE1_FILENAME)
 
-FIT_RESULTS_CSV = os.path.join(BASE_DIR, "..", "results", "sparc_results.csv") 
-OUTDIR = os.path.join(BASE_DIR, "..", "results", "btfr_validation")
+# Directorio de salida
+OUTDIR = os.path.join(ROOT_DIR, "results", "validation")
 os.makedirs(OUTDIR, exist_ok=True)
 
-# Factores de M/L canónicos (SPS)
-Y_DISK_SPS = 0.5 
-Y_BULB_SPS = 0.7 
+# CONSTANTES FÍSICAS
+# L[3.6] y MHI en Table 1 están en 10^9 M_sol
+LUMINOSITY_UNIT = 1e9 
 
 print("=============================================")
-print(f"     PROCESO SPARC + EDR — VALIDACIÓN GLOBAL (BTFR)")
-print(f"     Usando archivo: {TABLE1_FILENAME}")
+print("    VALIDACIÓN: RELACIÓN TULLY-FISHER BARIÓNICA (BTFR)")
 print("=============================================\n")
 
-# ---- PASO 1: CARGAR DATOS GLOBALES (TABLA 1) ----
-if not os.path.exists(TABLE1_PATH):
-    print(f"[ERROR] Archivo de Tabla 1 no encontrado en: {TABLE1_PATH}. ¡Revisa la ruta!")
-    exit()
-
+# 1. CARGA DE DATOS DE FIT (Ajuste EDR)
 try:
-    df_global = parse_table1(TABLE1_PATH)
-    df_global = df_global.rename(columns={"L[3.6]": "L_3p6", "MHI": "M_gas", "Vflat": "V_flat", "ID": "Galaxy"})
-except Exception as e:
-    print(f"[FATAL] Error al parsear Tabla 1: {e}")
-    exit()
-
-# ---- PASO 2: CARGAR FACTORES M/L Y CALCULAR M_bar ----
-df_merged = df_global.copy()
-use_sps = True
-
-# Intenta usar los Yd/Yb ajustados de los fits locales
-try:
-    df_fits = pd.read_csv(FIT_RESULTS_CSV)
-    df_fits = df_fits[["Galaxy", "Yd", "Yb"]].rename(columns={"Yd": "Yd_fit", "Yb": "Yb_fit"})
-    df_merged = pd.merge(df_global, df_fits, on="Galaxy", how="left")
-    
-    df_merged["Yd_used"] = df_merged["Yd_fit"].fillna(Y_DISK_SPS)
-    df_merged["Yb_used"] = df_merged["Yb_fit"].fillna(Y_BULB_SPS)
-    
-    if df_merged["Yd_fit"].count() > 0:
-        use_sps = False
-    
+    fit_df = pd.read_csv(RESULTS_CSV)
+    # Usamos A (velocidad asintótica EDR) como Vflat de nuestro fit
+    fit_df = fit_df[['Galaxy', 'A', 'Yd', 'Yb']].rename(columns={'A': 'Vflat_fit'}) 
 except FileNotFoundError:
-    pass # Continúa usando SPS si el archivo no existe
+    print(f"[ERROR] No se encontró el archivo de resultados del fit en: {RESULTS_CSV}")
+    exit()
 
-if use_sps:
-    print(f"[INFO] Factores M/L (SPS) utilizados: Yd={Y_DISK_SPS}, Yb={Y_BULB_SPS}")
+# 2. CARGA DE DATOS GLOBALES (Table 1)
+try:
+    global_df = parse_table1(TABLE1_PATH)
+    # Seleccionamos ID, Luminosidad, Masa de Gas (MHI) y Vflat de la tabla SPARC original
+    global_df = global_df[['ID', 'L[3.6]', 'MHI', 'Vflat']].rename(columns={'ID': 'Galaxy', 'Vflat': 'Vflat_tab1'})
+except FileNotFoundError:
+    print(f"[ERROR] No se encontró Table 1 en: {TABLE1_PATH}. Asegúrate que {TABLE1_FILENAME} esté ahí.")
+    exit()
+except Exception as e:
+    print(f"[ERROR] Falló el parseo de Table 1: {e}")
+    exit()
 
-df_btfr = df_merged.copy()
-# Calculo de M_star asumiendo simplificación: M_star = Yd_used * L_3p6 (Luminosidad total)
-df_btfr["M_star"] = df_btfr["L_3p6"] * df_btfr["Yd_used"] 
-df_btfr["M_bar"] = df_btfr["M_star"] + df_btfr["M_gas"] 
+
+# 3. MERGE Y PREPARACIÓN DE DATOS
+# Unir resultados del fit con datos globales.
+merged_df = pd.merge(fit_df, global_df, on='Galaxy', how='inner')
+
+if merged_df.empty:
+    print("[ERROR] No se pudo hacer merge. Verifica que los nombres de las galaxias coincidan en ambos CSV.")
+    exit()
+
+# 4. CÁLCULO DE MASA BARIÓNICA TOTAL (Mbar)
+# Mbar = (L[3.6] * Yd) + (L[3.6] * Yb) + MHI
+# Todas las componentes de masa se llevan a M_sol
+merged_df['M_disk'] = merged_df['L[3.6]'] * merged_df['Yd'] * LUMINOSITY_UNIT
+merged_df['M_bulge'] = merged_df['L[3.6]'] * merged_df['Yb'] * LUMINOSITY_UNIT
+merged_df['M_gas'] = merged_df['MHI'] * LUMINOSITY_UNIT # Asumimos MHI ya está en unidades de masa*
+merged_df['M_bar'] = merged_df['M_disk'] + merged_df['M_bulge'] + merged_df['M_gas']
+
+# 5. EXTRACCIÓN DE V_flat Y LOGARITMOS
+# Priorizamos la Vflat de la tabla SPARC (Vflat_tab1) si existe, si no, usamos la A del fit.
+merged_df['V_flat_final'] = merged_df['Vflat_tab1'].combine_first(merged_df['Vflat_fit'])
 
 # Filtrar datos válidos
-df_btfr = df_btfr.dropna(subset=["M_bar", "V_flat"]).query("V_flat > 0").copy()
-print(f"[INFO] Calculando BTFR con {len(df_btfr)} galaxias con datos completos.")
+btfr_data = merged_df[
+    (merged_df['M_bar'] > 0) & 
+    (merged_df['V_flat_final'] > 0)
+].copy()
 
-if len(df_btfr) < 5:
-    print("[ERROR] Datos insuficientes para BTFR después de la limpieza. Finalizando.")
+if len(btfr_data) < 3:
+    print("[ERROR] Datos insuficientes para regresión BTFR después del merge y filtrado.")
     exit()
 
-# ---- PASO 3: REGRESIÓN LOG-LOG ----
-log_V = np.log10(df_btfr["V_flat"].values)
-log_M = np.log10(df_btfr["M_bar"].values)
+# Logaritmos: log(M_bar / 10^9) y log(V_flat)
+btfr_data['log_Mbar'] = np.log10(btfr_data['M_bar'] / LUMINOSITY_UNIT)
+btfr_data['log_Vflat'] = np.log10(btfr_data['V_flat_final'])
 
-slope, intercept, r_value, p_value, std_err = stats.linregress(log_M, log_V)
+# 6. REGRESIÓN LINEAL (BTFR)
+slope, intercept, r_value, p_value, std_err = stats.linregress(
+    btfr_data['log_Mbar'], btfr_data['log_Vflat']
+)
+
 r_squared = r_value**2
 
-print(f"\n[BTFR RESULTS] r = {r_value:.4f}, r^2 = {r_squared:.4f}")
+print(f"\n--- Resultados de la Regresión BTFR (N={len(btfr_data)}) ---")
+print(f"Ecuación: Log(V_flat) = {slope:.3f} * Log(M_bar) + {intercept:.3f}")
+print(f"R^2 (Bondad de ajuste): {r_squared:.3f}")
+print(f"P-valor: {p_value:.2g}")
 
-# ---- PASO 4: PLOT BTFR ----
-out_plot = os.path.join(OUTDIR, "btfr_edr_validation.png")
-plot_btfr(log_M, log_V, slope, intercept, r_squared, out_plot)
 
-print(f"[OK] Plot BTFR guardado en: {out_plot}")
-print("\n>>> VALIDACIÓN GLOBAL (BTFR) COMPLETADA <<<")
+# 7. GUARDAR Y PLOTEAR
+# Guardar resultados intermedios
+btfr_data[['Galaxy', 'M_bar', 'V_flat_final', 'log_Mbar', 'log_Vflat']].to_csv(
+    os.path.join(OUTDIR, "btfr_data_results.csv"), index=False
+)
+
+# Generar el gráfico BTFR
+out_path_plot = os.path.join(OUTDIR, "btfr_validation.png")
+plot_btfr(
+    btfr_data['log_Mbar'].values, 
+    btfr_data['log_Vflat'].values, 
+    slope, 
+    intercept, 
+    r_squared, 
+    out_path_plot
+)
+
+print(f"\n[OK] Gráfico BTFR guardado en: {out_path_plot}")
+print("\n>>> VALIDACIÓN BTFR COMPLETADA <<<")
