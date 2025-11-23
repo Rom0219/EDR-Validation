@@ -22,8 +22,8 @@ from scipy import stats # Necesario para BTFR y regresiones
 # 1) CONFIGURACIÓN Y CONSTANTES
 # -------------------------
 # Nombres de archivos de datos:
-# CORRECCIÓN: Se ajusta el nombre del archivo de la Tabla 1 a la versión con doble extensión
-TABLE1_FILENAME = "SPARC_Lelli2016_Table1.txt.txt" 
+# ¡CORRECCIÓN FINAL! Usando los nombres exactos que subiste:
+TABLE1_FILENAME = "SPARC_Lelli2016_Table1.txt" 
 TABLE2_FILENAME = "SPARC_Lelli2016_Table2.txt"
 
 # Ruta de referencia (mencionada en sparc_fit.py)
