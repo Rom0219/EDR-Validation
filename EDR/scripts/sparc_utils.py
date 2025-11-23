@@ -21,8 +21,9 @@ from scipy import stats # Necesario para BTFR y regresiones
 # -------------------------
 # 1) CONFIGURACIÓN Y CONSTANTES
 # -------------------------
-# Nombres de archivos de datos: actualizados según tu petición
-TABLE1_FILENAME = "SPARC_Lelli2016_Table1.txt"
+# Nombres de archivos de datos:
+# CORRECCIÓN: Se ajusta el nombre del archivo de la Tabla 1 a la versión con doble extensión
+TABLE1_FILENAME = "SPARC_Lelli2016_Table1.txt.txt" 
 TABLE2_FILENAME = "SPARC_Lelli2016_Table2.txt"
 
 # Ruta de referencia (mencionada en sparc_fit.py)
@@ -67,8 +68,8 @@ def parse_table1(txt_path):
     # Convertir numéricas (ignorando errores)
     for c in df.columns:
         if c not in ["ID", "Ref"] and not c.startswith("extra"):
-             df[c] = pd.to_numeric(df[c], errors="coerce")
-             
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+            
     return df.dropna(subset=['ID']).reset_index(drop=True)
 
 
@@ -158,15 +159,16 @@ def load_rotmod_generic(path):
     
     # Si pandas lee mal, intentamos leer como texto y dividir
     if len(df.columns) < 8:
-         # Fallback a lectura básica si el header es problemático
-         try:
-             data = np.loadtxt(path, comments="#", usecols=range(8))
-             if data.ndim == 1: # Caso de una sola fila
-                 data = data[np.newaxis, :]
-             df = pd.DataFrame(data, columns=["r", "Vobs", "errV", "Vgas", "Vdisk", "Vbul", "SBdisk", "SBbul"])
-         except Exception:
-             raise KeyError(f"Archivo SPARC con columnas insuficientes o formato incorrecto: {path}")
+        # Fallback a lectura básica si el header es problemático
+        try:
+            data = np.loadtxt(path, comments="#", usecols=range(8))
+            if data.ndim == 1: # Caso de una sola fila
+                data = data[np.newaxis, :]
+            df = pd.DataFrame(data, columns=["r", "Vobs", "errV", "Vgas", "Vdisk", "Vbul", "SBdisk", "SBbul"])
+        except Exception:
+            raise KeyError(f"Archivo SPARC con columnas insuficientes o formato incorrecto: {path}")
 
+    # Renombrar columnas para estandarización si la lectura fue exitosa (o si era correcta)
     df.columns = ["r", "Vobs", "errV", "Vgas", "Vdisk", "Vbul", "SBdisk", "SBbul"]
     
     # Filtro de seguridad
@@ -209,7 +211,8 @@ def find_sigma_extra(residuals, errV, target_chi2red=1.0):
     """
     resid = np.asarray(residuals)
     errV = np.asarray(errV)
-    dof = len(resid) - 4 # 4 parámetros: A, R0, Yd, Yb
+    # El número de grados de libertad depende de los parámetros del fit_galaxy (4)
+    dof = len(resid) - 4 
 
     if dof <= 0:
         return 0.0
@@ -217,6 +220,9 @@ def find_sigma_extra(residuals, errV, target_chi2red=1.0):
     def chi2_minus_target(sig):
         # Función a la que se le busca la raíz: chi2_red(sig) - target
         denom = errV**2 + sig**2
+        # Evitar división por cero o valores negativos en el denominador
+        if np.any(denom <= 0):
+             return np.inf # Valor grande para forzar a sig a ser positivo
         val = np.sum((resid**2) / denom)
         return val / dof - target_chi2red
 
@@ -225,15 +231,17 @@ def find_sigma_extra(residuals, errV, target_chi2red=1.0):
         if chi2_minus_target(0.0) <= 0:
             return 0.0
     except Exception:
+        # Si el cálculo inicial falla (ej. división por cero), asumimos 0.0
         return 0.0
 
     # 2. Buscar la raíz para sigma_extra > 0
     sig_max = np.std(resid) * 10.0 + np.median(errV)
     try:
+        # Utilizamos brentq para encontrar la raíz entre 0 y sig_max
         root = brentq(chi2_minus_target, 1e-12, max(sig_max, 1e-6), maxiter=100, disp=False)
         return float(max(0.0, root))
     except Exception:
-        # Fallback si brentq falla (raro, pero posible)
+        # Fallback si brentq falla (el intervalo no contiene la raíz)
         return 0.0
 
 # -------------------------
@@ -316,6 +324,7 @@ def plot_fit_with_residuals(data, Vmodel_plot, result, fname, galaxy_name="Galax
     Vobs = data["Vobs"]
     errV = data["errV"]
 
+    # Usar interpolación para los residuales
     Vmodel_interp = np.interp(r, result["r_plot"], Vmodel_plot)
     residuals = Vobs - Vmodel_interp
 
