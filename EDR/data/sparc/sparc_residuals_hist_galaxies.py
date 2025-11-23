@@ -5,22 +5,26 @@
 sparc_residuals_hist_galaxies.py
 ------------------------------------------------
 Genera histogramas de residuales para cada galaxia
-usando los archivos .npy guardados en results/residuals.
-
-Salida:
-    EDR/data/sparc/results/histograms/galaxies/<GALAXY>_hist.png
+usando los archivos .npy guardados en results/residuals (Análisis de Diagnóstico).
 """
 
 import os
 import numpy as np
-import matplotlib.pyplot as plt
+# Importamos la función centralizada de ploteo
+from sparc_utils import plot_residual_histogram_single
 
+# --- CONFIGURACIÓN DE RUTAS (Ajustadas para la estructura de carpetas) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-RESID_DIR = os.path.join(BASE_DIR, "results", "residuals")
-HIST_DIR  = os.path.join(BASE_DIR, "results", "histograms", "galaxies")
+# Asumimos que este script está en scripts/analysis/ o similar, subimos a la raíz
+ROOT_DIR = os.path.join(BASE_DIR, "..", "..") 
+
+RESID_DIR = os.path.join(ROOT_DIR, "results", "residuals")
+# Usamos un directorio más específico para los histogramas individuales
+HIST_DIR  = os.path.join(ROOT_DIR, "results", "histograms_individual")
 
 os.makedirs(HIST_DIR, exist_ok=True)
 
+# Lista de galaxias (puedes ampliarla a las 100 si es necesario)
 GALAXIES = [
     "NGC3198", "NGC2403", "NGC2841", "NGC6503",
     "NGC3521", "DDO154", "NGC3741", "IC2574",
@@ -28,32 +32,26 @@ GALAXIES = [
 ]
 
 print("=============================================")
-print("   HISTOGRAMAS DE RESIDUALES POR GALAXIA")
+print("    HISTOGRAMAS DE RESIDUALES POR GALAXIA")
 print("=============================================\n")
 
 for g in GALAXIES:
     f = os.path.join(RESID_DIR, f"{g}_residuals.npy")
 
     if not os.path.exists(f):
-        print(f"[SKIP] No residuals: {g}")
+        print(f"[SKIP] No residuals: {g}. Ejecuta el fit primero.")
         continue
 
-    residuals = np.load(f)
+    try:
+        residuals = np.load(f)
+    except Exception as e:
+        print(f"[FAIL] Error cargando residuales de {g}: {e}")
+        continue
 
-    plt.figure(figsize=(7,5))
-    plt.hist(residuals, bins=25, alpha=0.85, color="darkblue")
-    plt.axvline(np.mean(residuals), color="red", linestyle="--", label="Media")
-    plt.title(f"Histograma de Residuales — {g}")
-    plt.xlabel("Residual (Vobs - Vmodel)")
-    plt.ylabel("Frecuencia")
-    plt.grid(True)
-    plt.legend()
-
+    # >>> LLAMADA A LA FUNCIÓN CENTRALIZADA DE UTILITY <<<
     out_path = os.path.join(HIST_DIR, f"{g}_hist.png")
-    plt.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close()
+    plot_residual_histogram_single(residuals, out_path, galaxy_name=g)
 
     print(f"[OK] Histograma guardado → {out_path}")
 
 print("\n>>> PROCESO COMPLETADO <<<")
-print(f"Histogramas individuales en: {HIST_DIR}")
