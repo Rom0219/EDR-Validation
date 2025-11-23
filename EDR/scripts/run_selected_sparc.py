@@ -34,9 +34,9 @@ os.makedirs(RESIDUALS_DIR, exist_ok=True)
 
 # Lista de las primeras 10 galaxias (tu muestra de prueba)
 GALAXIES_SAMPLE = [
-    "NGC3198", "NGC2403", "NGC2841", "NGC6503",
-    "NGC3521", "DDO154", "NGC3741", "IC2574",
-    "NGC3109", "NGC2976"
+    "NGC3198_rotmod.dat", "NGC2403_rotmod.dat", "NGC2841_rotmod.dat", "NGC6503_rotmod.dat",
+    "NGC3521_rotmod.dat", "DDO154_rotmod.dat", "NGC3741_rotmod.dat", "IC2574_rotmod.dat",
+    "NGC3109_rotmod.dat", "NGC2976_rotmod.dat"
 ]
 
 # Archivo de salida principal
