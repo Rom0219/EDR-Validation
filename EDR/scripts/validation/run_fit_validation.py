@@ -82,6 +82,7 @@ def residuals(params, R_data, Vobs, e_Vobs):
     # Restricciones de parámetros (los parámetros físicos deben ser positivos)
     # Yd y Yb deben ser > 0.01. V_max_sq y R_scale deben ser > 0
     if Yd < 0.01 or Yb < 0.0 or V_max_sq < 0.01 or R_scale < 0.1 or sigma_extra < 0:
+        # Se devuelve infinito si los parámetros están fuera de los límites de las restricciones internas
         return np.inf * np.ones_like(Vobs)
         
     Vmodel = V_total(R_data, Yd, Yb, V_max_sq, R_scale)
@@ -120,8 +121,8 @@ def fit_galaxy_curve(df_rc):
     # 3. Límites de los Parámetros (Bounds)
     # [Yd, Yb, V_max_sq, R_scale, sigma_extra]
     bounds = (
-        [0.01, 0.0, 0.01, 0.1, 0.0],  # Límite inferior
-        [5.0, 5.0, 200000.0, 100.0, 5.0]  # Límite superior
+        [0.01, 0.0, 0.01, 0.1, 0.0],  # Límite inferior
+        [5.0, 5.0, 500000.0, 100.0, 5.0]  # Límite superior: Aumentado V_max_sq de 200000.0 a 500000.0
     )
     
     # 4. Ajuste por Mínimos Cuadrados
@@ -152,7 +153,8 @@ def fit_galaxy_curve(df_rc):
         # 7. Graficar (para validación visual)
         plot_fit(df_rc, R_data, V_total, popt, chi2_red)
         
-        print(f"INFO: {galaxy_name} - Ajuste exitoso. $\chi^2_\\nu={chi2_red:.2f}$, Yd={popt[0]:.2f}, Yb={popt[1]:.2f}")
+        # Uso de raw f-string (rf"...") para evitar SyntaxWarning con \chi
+        print(rf"INFO: {galaxy_name} - Ajuste exitoso. $\chi^2_\nu={chi2_red:.2f}$, Yd={popt[0]:.2f}, Yb={popt[1]:.2f}")
         return fit_results
 
     except Exception as e:
@@ -189,14 +191,17 @@ def plot_fit(df_rc, R_data_obs, V_total_func, popt, chi2_red):
     plt.figure(figsize=(7, 6))
     
     # 1. Componentes Bariónicas (Modelo)
-    plt.plot(R_model, V_model_bar, linestyle=':', color='gray', label=f'Bariones Total ($\gamma_d={Yd:.2f}, \gamma_b={Yb:.2f}$)')
+    # Uso de raw f-string (rf"...") para evitar SyntaxWarning con \gamma
+    plt.plot(R_model, V_model_bar, linestyle=':', color='gray', 
+             label=rf'Bariones Total ($\gamma_d={Yd:.2f}, \gamma_b={Yb:.2f}$)')
     
     # 2. Componente DM (EDR) (Modelo)
     plt.plot(R_model, V_model_dm, linestyle='--', color='purple', label='Halo DM (EDR Paramétrico)')
 
     # 3. Velocidad Total (Modelo)
+    # Uso de raw f-string (rf"...") para evitar SyntaxWarning con \chi
     plt.plot(R_model, V_model_total, linestyle='-', color='blue', linewidth=2, 
-             label=f'Modelo EDR Total ($\chi^2_\\nu={chi2_red:.2f}$)')
+             label=rf'Modelo EDR Total ($\chi^2_\nu={chi2_red:.2f}$)')
     
     # 4. Observaciones
     plt.errorbar(R_obs, Vobs, yerr=e_Vobs, fmt='o', color='black', 
@@ -218,10 +223,12 @@ def load_sparc_data(filepath):
     """Carga los datos de la Tabla 2 de SPARC (formato de ancho fijo)."""
     try:
         col_names = ['ID', 'D', 'R', 'Vobs', 'e_Vobs', 'Vgas', 'Vdisk', 'Vbul']
+        
+        # Revisión para evitar errores de caracteres no imprimibles (U+00A0)
         df = pd.read_fwf(
             filepath,
             colspecs=[
-                (0, 11),  # ID
+                (0, 11),  # ID
                 (12, 18), # D
                 (19, 25), # R
                 (26, 32), # Vobs
