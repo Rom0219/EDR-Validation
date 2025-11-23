@@ -3,67 +3,61 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.optimize import curve_fit
+from scipy.stats import linregress
+import sys 
 
 # --- CONFIGURACIÓN DE RUTAS ---
-# Archivo de resultados de ajustes individuales (contiene Yd y Yb)
+# ARCHIVOS REQUERIDOS:
+# 1. sparc_results.csv: Contiene los mejores ajustes (Yd, Yb) para cada galaxia.
+# 2. SPARC_Lelli2016_Table2.txt: Contiene los datos brutos de las curvas de rotación (R, Vobs, Vgas, Vdisk, Vbul).
 RESULTS_FILE = Path("EDR/data/sparc/sparc_results.csv")
-# Archivo de datos de la curva de rotación (Tabla 2 de SPARC)
 TABLE2_FILE = Path("EDR/data/sparc/SPARC_Lelli2016_Table2.txt")
-# Directorio de salida
 OUT_DIR = Path("EDR/results/validation")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Constante de conversión: 1 km^2 s^-2 kpc^-1 a m s^-2
-# (1 km/s)^2 / 1 kpc = 1e6 m^2/s^2 / 3.086e19 m = 3.24e-14 m/s^2
-# Aceleración característica de MOND (a_0) en unidades de (km/s)^2 / kpc
-# a_0 = 1.2 x 10^-10 m/s^2. En unidades galácticas: ~ 3.70 (km/s)^2 / kpc
-UNIT_ACCEL_FACTOR = 3.24e-14 # Factor de conversión si se necesitara a_0 en m/s^2, pero lo mantendremos en unidades galácticas para el gráfico
-A0_GALACTIC = 3.70 # Valor de a_0 en (km/s)^2 / kpc (aproximado)
+# Constante MOND en unidades de (km/s)^2 / kpc.
+# Usamos el valor canónico para la curva teórica de referencia
+A0_GALACTIC = 3.70 
 
-# --- MODELO MOND (PARA COMPARACIÓN) ---
-# Función de interpolación estándar (ejemplo: función 'simple' o 'canonical' de MOND)
+# --- MODELO MOND ---
 def mond_interpolation(g_bar, a0):
-    """
-    Función de interpolación MOND (canonical: g_obs = g_bar * mu + g_DM * (1-mu) )
-    Aquí usamos la forma más simple: g_obs^2 = g_bar * a0 + g_bar^2
-    """
-    return np.sqrt(g_bar**2 + g_bar * a0)
+    """ g_obs = sqrt(g_bar^2 + g_bar * a0) """
+    # Se usa np.abs(g_bar) para evitar errores si g_bar fuera negativo
+    return np.sqrt(g_bar**2 + np.abs(g_bar) * a0)
 
 # --- CÁLCULO DE ACELERACIONES (g = V^2 / R) ---
 def calculate_accelerations(df_rc, Yd, Yb):
-    """Calcula la aceleración observada y bariónica para cada punto de datos."""
+    """
+    Calcula la aceleración observada (g_obs = Vobs^2 / R) y bariónica (g_bar = Vbar^2 / R).
+    Asegura que las columnas sean numéricas y limpia los datos inválidos.
+    """
     df_rc = df_rc.copy()
     
-    # Pre-limpieza y manejo de cero
-    df_rc['R'] = df_rc['R'].replace(0, np.nan)
-    df_rc = df_rc.dropna(subset=['R'])
+    # Asegurar que R y Velocidades sean numéricas (CRÍTICO)
+    numeric_cols = ['R', 'Vobs', 'e_Vobs', 'Vgas', 'Vdisk', 'Vbul', 'SBdisk', 'SBbul']
+    for col in numeric_cols:
+        # 'coerce' convierte valores problemáticos (como '---' o '-') a NaN
+        df_rc[col] = pd.to_numeric(df_rc[col], errors='coerce')
+        
+    # Limpieza de NaN, radio cero, y componentes inválidas
+    df_rc = df_rc.dropna(subset=['R', 'Vobs', 'Vgas', 'Vdisk', 'Vbul'])
+    df_rc = df_rc[df_rc['R'] > 0]
+    
+    if df_rc.empty:
+        return df_rc
 
-    # 1. Aceleración Observada (g_obs): g_obs = V_obs^2 / R
+    # Calcular V^2 y aceleraciones
     df_rc['Vobs_sq'] = df_rc['Vobs']**2
     df_rc['g_obs'] = df_rc['Vobs_sq'] / df_rc['R']
     
-    # 2. Aceleración Bariónica (g_bar): g_bar = (V_gas^2 + Yd*V_disk^2 + Yb*V_bul^2) / R
-    
-    # NOTA: V_disk y V_bul en el archivo SPARC ya incluyen la normalización para Yd=1, Yb=1.
-    # La velocidad bariónica total al cuadrado es:
-    # V_bar^2 = V_gas^2 + Yd*V_disk^2 + Yb*V_bul^2
-    
-    # Los V's en Table 2 son componentes de velocidad (no cuadradas)
-    # Vgas, Vdisk, Vbul son las contribuciones a la velocidad circular (ej: Vgas = sqrt(g_gas * R))
-    # Por lo tanto, g_bar = g_gas + g_disk + g_bul
-    # g_gas = V_gas^2 / R, g_disk = V_disk^2 / R (pero escalado por Yd), g_bul = V_bul^2 / R (escalado por Yb)
-    
-    # La masa total de bariones es M_bar = Yd*M_disk + Yb*M_bul + M_gas
-    # La aceleración total de bariones es g_bar = g_gas + Yd*g_disk + Yb*g_bul (asumiendo que g_disk/g_bul son de Y=1)
-    
-    # Velocidad al cuadrado de las componentes bariónicas (escaladas por M/L)
-    df_rc['Vbar_sq'] = df_rc['Vgas']**2 + Yd * (df_rc['Vdisk']**2) + Yb * (df_rc['Vbul']**2)
-    
-    # Aceleración Bariónica total
+    # Calcular la velocidad bariónica al cuadrado (Vbar^2 = Vgas^2 + Yd*Vdisk^2 + Yb*Vbul^2)
+    # Nota: Vgas, Vdisk, Vbul son las velocidades de los componentes, por lo que V^2 = V_componente^2
+    df_rc['Vbar_sq'] = df_rc['Vgas']**2 + Yd * df_rc['Vdisk']**2 + Yb * df_rc['Vbul']**2
     df_rc['g_bar'] = df_rc['Vbar_sq'] / df_rc['R']
     
-    # Filtro: Evitar valores no físicos o infinitos
+    # Filtro final: Aceleraciones positivas y finitas
     df_rc = df_rc[(df_rc['g_obs'] > 0) & (df_rc['g_bar'] > 0)]
+    df_rc = df_rc.replace([np.inf, -np.inf], np.nan).dropna(subset=['g_obs', 'g_bar'])
 
     return df_rc
 
@@ -72,57 +66,69 @@ def calculate_accelerations(df_rc, Yd, Yb):
 # Cargar los resultados de los ajustes (donde están Yd y Yb)
 try:
     df_res = pd.read_csv(RESULTS_FILE)
-    df_res['Galaxy'] = df_res['Galaxy'].str.strip()
+    df_res['Galaxy'] = df_res['Galaxy'].astype(str).str.strip()
     fit_params = df_res.set_index('Galaxy')[['Yd', 'Yb']].to_dict('index')
-except FileNotFoundError:
-    print(f"ERROR: Archivo de resultados no encontrado en: {RESULTS_FILE}")
-    print("Asegúrate de haber corrido primero el script de ajuste de curvas de rotación.")
-    exit()
-
-# Cargar los datos brutos de la curva de rotación (Table 2)
-# Hay que parsear el archivo de texto de formato fijo, no es CSV simple
-try:
-    # Usamos pandas read_fwf (fixed width file) basado en la descripción de Table2.mrt
-    # ID: 1-11, R: 20-25, Vobs: 27-32, Vgas: 40-45, Vdisk: 47-52, Vbul: 54-59
-    col_names = ['ID', 'D', 'R', 'Vobs', 'e_Vobs', 'Vgas', 'Vdisk', 'Vbul']
-    col_widths = [11, 1, 6, 1, 6, 1, 5, 1, 6, 1, 6, 1, 5, 1, 6, 1, 6]
-    # Suma de anchos para las columnas que nos interesan (ver descripción Byte-by-byte)
-    # 1-11 ID, 13-18 D, 20-25 R, 27-32 Vobs, 34-38 e_Vobs, 40-45 Vgas, 47-52 Vdisk, 54-59 Vbul
-    # Los indices son 0-based, el width de los separadores se incluye en el skip
     
-    df_t2 = pd.read_fwf(
+    if not fit_params:
+        print(f"ERROR: Archivo de resultados '{RESULTS_FILE}' está vacío.")
+        sys.exit(1)
+    
+    galaxies_to_plot = list(fit_params.keys())
+    print(f"INFO: Galaxias cargadas para validación (N={len(galaxies_to_plot)}): {', '.join(galaxies_to_plot[:5])}...")
+    
+except FileNotFoundError:
+    print(f"ERROR: Archivo de resultados NO encontrado en: {RESULTS_FILE}")
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR al cargar o procesar {RESULTS_FILE}. Detalle: {e}")
+    sys.exit(1)
+
+
+# Cargar los datos brutos de la curva de rotación (Table 2) - MÉTODO ROBUSTO Y FORZADO
+try:
+    # Nombres de las columnas del archivo SPARC Table 2
+    col_names_full = ['ID', 'D', 'R', 'Vobs', 'e_Vobs', 'Vgas', 'Vdisk', 'Vbul', 'SBdisk', 'SBbul']
+    
+    df_t2 = pd.read_csv(
         TABLE2_FILE,
-        colspecs=[
-            (0, 11),  # ID
-            (12, 18), # D
-            (19, 25), # R
-            (26, 32), # Vobs
-            (33, 38), # e_Vobs
-            (39, 45), # Vgas
-            (46, 52), # Vdisk
-            (53, 59), # Vbul
-        ],
+        sep='\s+',  # Separador: uno o más espacios en blanco
         header=None,
-        names=col_names,
-        skiprows=42 # Saltar el encabezado de la descripción del archivo
+        names=col_names_full,
+        skiprows=42, # Saltar el encabezado y descripciones (42 líneas)
+        engine='python', # Usar el motor Python para mejor control de separación
+        skipinitialspace=True,
+        # *** FIX CRÍTICO: Forzar la columna ID a ser string para el matching ***
+        dtype={'ID': str} 
     )
+    
+    # Limpiar espacios alrededor del ID
     df_t2['ID'] = df_t2['ID'].str.strip()
     
-    # Filtrar solo las galaxias que tenemos en el archivo de resultados (las 10 ajustadas)
-    galaxies_to_plot = list(fit_params.keys())
+    # DEBUG CRÍTICO: Imprime las primeras filas del archivo leído
+    print("\nDEBUG: Primeras 5 filas del archivo SPARC Table 2 (después de parsear):")
+    print(df_t2.head().to_string())
+    print("-" * 50)
+    
+    # Filtrar solo las galaxias que ajustamos previamente
     df_t2 = df_t2[df_t2['ID'].isin(galaxies_to_plot)]
 
     if df_t2.empty:
-        print("ERROR: No se encontraron datos de curva de rotación para las galaxias en el archivo de resultados.")
-        exit()
-
-except FileNotFoundError:
-    print(f"ERROR: Archivo de datos de curva de rotación no encontrado en: {TABLE2_FILE}")
-    exit()
+        print("\nERROR CRÍTICO: No hay coincidencia de IDs. Esto significa que los nombres en 'sparc_results.csv' no coinciden con los de 'SPARC_Lelli2016_Table2.txt'.")
+        print(f"IDs en sparc_results.csv (ajustes): {galaxies_to_plot[:5]}...")
+        # Imprimir IDs únicos de la tabla 2 que se lograron leer
+        read_ids = pd.read_csv(
+            TABLE2_FILE,
+            sep='\s+', header=None, names=['ID'] + ['_'] * (len(col_names_full) - 1), 
+            skiprows=42, engine='python', skipinitialspace=True, dtype={'ID': str}
+        )['ID'].str.strip().unique()
+        print(f"IDs leídos en Table2 (muestra): {read_ids[:5]}...")
+        sys.exit(1)
+    
+    print(f"INFO: Puntos de datos brutos cargados y filtrados (N={len(df_t2)}).")
+    
 except Exception as e:
-    print(f"ERROR al parsear {TABLE2_FILE}. Revisar el formato de ancho fijo.")
-    print(e)
-    exit()
+    print(f"ERROR al parsear {TABLE2_FILE}. Detalle: {e}")
+    sys.exit(1)
 
 
 # --- CÁLCULO DE MDAR PARA TODA LA MUESTRA ---
@@ -130,71 +136,90 @@ except Exception as e:
 mdar_data = []
 
 for g, params in fit_params.items():
-    Yd = params.get('Yd', 1.0)
-    Yb = params.get('Yb', 0.0)
+    Yd = params.get('Yd')
+    Yb = params.get('Yb')
     
-    # 1. Obtener los datos de la curva de rotación para la galaxia actual
-    df_rc_g = df_t2[df_t2['ID'] == g].copy()
-    
-    if df_rc_g.empty:
-        print(f"Advertencia: Datos de curva de rotación faltantes para {g}")
+    # Validación de parámetros
+    if Yd is None or Yb is None or np.isnan(Yd) or np.isnan(Yb) or Yd < 0 or Yb < 0:
         continue
         
-    # 2. Calcular las aceleraciones usando los Yd/Yb ajustados
+    df_rc_g = df_t2[df_t2['ID'] == g]
+    
+    if df_rc_g.empty:
+        # Esta galaxia existe en los resultados, pero no en la tabla 2 después del filtrado.
+        continue
+
     df_accel = calculate_accelerations(df_rc_g, Yd, Yb)
     
-    # 3. Guardar los datos para el plot global
-    df_accel['Galaxy'] = g
-    mdar_data.append(df_accel[['Galaxy', 'R', 'g_obs', 'g_bar']])
+    if not df_accel.empty:
+        df_accel['Galaxy'] = g
+        mdar_data.append(df_accel[['Galaxy', 'R', 'g_obs', 'g_bar']])
 
 if not mdar_data:
-    print("No se generaron datos de MDAR. Revise sus archivos de entrada.")
-    exit()
+    print("\nERROR CRÍTICO: Después de calcular g_obs y g_bar, no queda NINGÚN punto válido.")
+    print("Causa probable: Los valores R, Vobs, Vgas, Vdisk, Vbul en la Tabla 2 contienen muchos datos faltantes ('---', '-') o valores no positivos que fueron descartados.")
+    sys.exit(1)
     
 df_mdar = pd.concat(mdar_data)
-df_mdar['log_g_obs'] = np.log10(df_mdar['g_obs'])
-df_mdar['log_g_bar'] = np.log10(df_mdar['g_bar'])
+# Agregar un pequeño valor (epsilon) para evitar log(0)
+epsilon = 1e-10 
+df_mdar['log_g_obs'] = np.log10(df_mdar['g_obs'] + epsilon)
+df_mdar['log_g_bar'] = np.log10(df_mdar['g_bar'] + epsilon)
 
-# --- REGRESIÓN (Opcional, solo para medir dispersión) ---
+# --- REGRESIÓN Y CÁLCULO DE CORRELACIÓN ---
 
-# Se ajusta la MDAR observada para encontrar la dispersión
-x = df_mdar['log_g_bar'].values
-y = df_mdar['log_g_obs'].values
-# Fit the power law relationship: log(g_obs) = m * log(g_bar) + c
-# La MDAR no es lineal en log-log, pero la dispersión se mide contra el MOND teórico
-# En su lugar, comparamos la dispersión de los residuales con la dispersión de MOND.
-
-# Para simplificar, ajustamos la función MOND a los datos (en lugar de una regresión lineal)
-# MOND predice g_obs = mond_interpolation(g_bar, a0_fit)
 g_bar_vals = df_mdar['g_bar'].values
 g_obs_vals = df_mdar['g_obs'].values
+N_points = len(df_mdar)
 
-# Fit a_0 to the data (this is NOT what MOND does, but useful for comparison)
+print(f"\nINFO: Puntos de datos MDAR finales válidos (N_points): {N_points}")
+
+if N_points == 0:
+    print("ERROR CRÍTICO: ¡ydata está vacío! N_points=0. Falló la limpieza de datos en el bucle.")
+    sys.exit(1)
+
+r_value_log = np.nan
+a0_fit = np.nan
+R_squared_fit = np.nan
+
+# 1. Ajuste no lineal MOND-like
 try:
     popt, pcov = curve_fit(mond_interpolation, g_bar_vals, g_obs_vals, p0=[A0_GALACTIC], maxfev=5000)
     a0_fit = popt[0]
-    # Calculate R-squared (coefficient of determination) against the MOND-like fit
-    residuals = g_obs_vals - mond_interpolation(g_bar_vals, a0_fit)
-    ss_res = np.sum(residuals**2)
-    ss_tot = np.sum((g_obs_vals - np.mean(g_obs_vals))**2)
-    R_squared = 1 - (ss_res / ss_tot)
-    r_value = np.sqrt(R_squared)
     
-    print("----------------------------------------------------------------")
-    print("           RESULTADOS DE LA VALIDACIÓN MDAR (EDR)")
-    print("----------------------------------------------------------------")
-    print(f"Ajuste MDAR (MOND-like, g_obs^2 = g_bar^2 + g_bar * a_0_fit):")
-    print(f"  a_0 ajustado: {a0_fit:.3f} (km/s)^2 / kpc")
-    print(f"  Correlación (r) vs. curva MOND-like: {r_value:.4f}")
-    print(f"  Coef. de Determinación (R^2): {R_squared:.4f}")
-    print(f"  Valor MOND canónico (r): ~ 0.98 a 0.99")
-    print("----------------------------------------------------------------")
-
+    residuals_fit = g_obs_vals - mond_interpolation(g_bar_vals, a0_fit)
+    ss_res_fit = np.sum(residuals_fit**2)
+    ss_tot = np.sum((g_obs_vals - np.mean(g_obs_vals))**2)
+    R_squared_fit = 1 - (ss_res_fit / ss_tot)
+    
 except RuntimeError:
-    a0_fit = A0_GALACTIC
-    R_squared = np.nan
-    r_value = np.nan
-    print("Advertencia: Falló el ajuste no lineal. Usando a_0 canónico para la MDAR teórica.")
+    print("WARNING: Falló el ajuste no lineal (curve_fit). Saltando métricas MOND-like.")
+    pass
+except Exception as e:
+    print(f"WARNING: Falló el ajuste MOND por una excepción: {e}")
+    pass
+
+
+# 2. Correlación de Pearson (r) en log-log
+try:
+    slope, intercept, r_value_log, p_value, std_err = linregress(df_mdar['log_g_bar'], df_mdar['log_g_obs'])
+except ValueError:
+    print("WARNING: Falló la regresión lineal (linregress). Saltando métrica de correlación.")
+    pass
+
+
+print("----------------------------------------------------------------")
+print("           RESULTADOS DE LA VALIDACIÓN MDAR (EDR)")
+print("----------------------------------------------------------------")
+print(f"Puntos de datos MDAR totales (N): {N_points}")
+if not np.isnan(a0_fit):
+    print(f"Ajuste MDAR (MOND-like):")
+    print(f"  a_0 ajustado: {a0_fit:.3f} (km/s)^2 / kpc")
+    print(f"  R^2 vs. curva MOND-like: {R_squared_fit:.4f}")
+if not np.isnan(r_value_log):
+    print(f"Correlación de Pearson (r) de log(g_obs) vs log(g_bar): {r_value_log:.4f}")
+print("----------------------------------------------------------------")
+
 
 # --- GRÁFICO DE LA RELACIÓN ACELERACIÓN-DISCREPANCIA DE MASA (MDAR) ---
 
@@ -204,24 +229,29 @@ plt.figure(figsize=(8, 7))
 plt.scatter(df_mdar['log_g_bar'], df_mdar['log_g_obs'], s=10, alpha=0.5, label='Modelo EDR (Datos de Curvas Ajustadas)')
 
 # 2. Línea de Identidad (g_obs = g_bar)
-x_range = np.linspace(df_mdar['log_g_bar'].min() - 0.5, df_mdar['log_g_obs'].max() + 0.5, 100)
+# Se usa np.nanmin y np.nanmax para manejar posibles NaNs
+log_min_x = np.nanmin(df_mdar['log_g_bar'])
+log_max_y = np.nanmax(df_mdar['log_g_obs'])
+x_range = np.linspace(min(log_min_x, -2) - 0.5, max(log_max_y, 2) + 0.5, 100)
 plt.plot(x_range, x_range, 'k--', label='$g_{obs} = g_{bar}$ (Bariones Dominan)')
 
 # 3. Curva Teórica MOND (Usando a_0 canónico)
-g_bar_theory = np.logspace(np.min(x), np.max(x), 100)
+g_bar_theory = np.logspace(log_min_x, log_max_y, 100)
 g_obs_mond = mond_interpolation(g_bar_theory, A0_GALACTIC)
-plt.plot(np.log10(g_bar_theory), np.log10(g_obs_mond), 'r-', linewidth=2, label=f'MDAR Teórico (MOND $a_0 \\approx {A0_GALACTIC:.2f}$)')
+plt.plot(np.log10(g_bar_theory), np.log10(np.abs(g_obs_mond)), 'r-', linewidth=2, label=f'MDAR Teórico (MOND $a_0 \\approx {A0_GALACTIC:.2f}$)')
 
 plt.xlabel('log$_{10}(g_{bar})$ $[log_{10}((km/s)^2/kpc)]$')
 plt.ylabel('log$_{10}(g_{obs})$ $[log_{10}((km/s)^2/kpc)]$')
-plt.title('Relación Aceleración-Discrepancia de Masa (MDAR) - EDR vs. MOND')
+
+title_r = f" (r={r_value_log:.4f})" if not np.isnan(r_value_log) else ""
+plt.title(f'Relación MDAR - EDR vs. MOND{title_r}')
 plt.legend()
 plt.grid(True, which="both", ls="--", alpha=0.6)
-plt.axis('equal') # Importante para ver la dispersión
+plt.gca().set_aspect('equal', adjustable='box') 
 
 mdar_plot_path = OUT_DIR / "MDAR_plot_EDR_vs_MOND.png"
 plt.savefig(mdar_plot_path, dpi=200)
 plt.close()
 
 print(f"Gráfico MDAR guardado en: {mdar_plot_path}")
-print("\n--- ¡Validación MDAR completada! Revisa el gráfico y el valor de correlación (r). ---\n")
+print("\n--- Por favor, copia y pega TODO el resultado de la consola (incluyendo INFO y DEBUG) ---")
